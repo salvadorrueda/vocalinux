@@ -37,6 +37,10 @@ class SpeechRecognitionManagerProtocol(Protocol):
         """Register a callback for recognized text."""
         ...
 
+    def reconfigure(self, **kwargs) -> None:
+        """Reconfigure the engine (language, model, etc.), restarting if needed."""
+        ...
+
 
 class TextInjectorProtocol(Protocol):
     """Protocol defining the interface for TextInjector."""

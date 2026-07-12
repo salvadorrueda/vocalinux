@@ -159,6 +159,9 @@ class EvdevKeyboardBackend(KeyboardBackend):
         self.last_trigger_time = 0
         self.last_key_press_time = 0
         self.double_tap_threshold = 0.3  # seconds
+        # Per-binding double-tap state for extra bindings:
+        # name -> {"last_key_press_time": float, "last_trigger_time": float}
+        self._extra_tap_state: dict = {}
         self.key_pressed_devices: set[int] = set()
 
         self._devices_lock = threading.Lock()
@@ -486,8 +489,33 @@ class EvdevKeyboardBackend(KeyboardBackend):
                             logger.debug(f"Key release {self._modifier_key} detected (evdev)")
                             threading.Thread(target=self.key_release_callback, daemon=True).start()
 
+            if value == 1:
+                self._dispatch_extra_bindings(code)
+
         except Exception as e:
             logger.error(f"Error handling key event: {e}")
+
+    def _dispatch_extra_bindings(self, code: int) -> None:
+        """Run double-tap detection for each extra binding on a key press."""
+        for name, _shortcut, modifier_key, callback in self.iter_extra_bindings():
+            if code not in MODIFIER_KEY_CODES.get(modifier_key, set()):
+                continue
+
+            current_time = time.time()
+            state = self._extra_tap_state.setdefault(
+                name, {"last_key_press_time": 0.0, "last_trigger_time": 0.0}
+            )
+
+            if (
+                current_time - state["last_key_press_time"] < self.double_tap_threshold
+                and callback is not None
+                and current_time - state["last_trigger_time"] > 0.5
+            ):
+                logger.debug(f"Double-tap {modifier_key} detected for '{name}' (evdev)")
+                state["last_trigger_time"] = current_time
+                threading.Thread(target=callback, daemon=True).start()
+
+            state["last_key_press_time"] = current_time
 
 
 # Export availability

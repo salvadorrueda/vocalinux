@@ -515,3 +515,177 @@ class TestTrayIndicatorSignalHandling(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTrayIndicatorLanguageSwitching(unittest.TestCase):
+    """Tests for the Language submenu and cycle-language shortcut wiring."""
+
+    @classmethod
+    def setUpClass(cls):
+        """Set up class fixtures."""
+        sys.modules["gi"] = mock_gi
+        sys.modules["gi.repository"] = mock_gi_repository
+
+    def setUp(self):
+        """Set up test environment before each test."""
+        mock_gtk.reset_mock()
+        mock_glib.reset_mock()
+        mock_appindicator.reset_mock()
+        mock_glib.idle_add.side_effect = lambda func, *args: func(*args) or False
+        modules_to_remove = [k for k in list(sys.modules.keys()) if "tray_indicator" in k]
+        for mod in modules_to_remove:
+            del sys.modules[mod]
+
+    def _make_indicator(self, cycle_shortcut=""):
+        """Build a TrayIndicator with all collaborators mocked."""
+        from vocalinux.ui.tray_indicator import TrayIndicator
+
+        patchers = [
+            patch("vocalinux.ui.tray_indicator.logging"),
+            patch("vocalinux.ui.tray_indicator._resource_manager"),
+            patch("vocalinux.ui.tray_indicator.ConfigManager"),
+            patch("vocalinux.ui.tray_indicator.KeyboardShortcutManager"),
+            patch("vocalinux.ui.tray_indicator.LanguageSwitcher"),
+        ]
+        mocks = [p.start() for p in patchers]
+        for p in patchers:
+            self.addCleanup(p.stop)
+        _, mock_resource_manager, mock_config_manager, mock_keyboard_manager, mock_switcher_cls = (
+            mocks
+        )
+
+        config_values = {
+            ("shortcuts", "toggle_recognition"): "ctrl+ctrl",
+            ("shortcuts", "mode"): "toggle",
+            ("shortcuts", "cycle_language"): cycle_shortcut,
+        }
+        mock_config_inst = MagicMock()
+        mock_config_inst.get_str.side_effect = lambda section, key, default="": config_values.get(
+            (section, key), default
+        )
+        mock_config_manager.return_value = mock_config_inst
+
+        mock_keyboard_inst = MagicMock()
+        mock_keyboard_inst.active = False
+        mock_keyboard_manager.return_value = mock_keyboard_inst
+
+        mock_switcher_inst = MagicMock()
+        mock_switcher_cls.return_value = mock_switcher_inst
+
+        mock_resource_manager.icons_dir = "/tmp/icons"
+        mock_resource_manager.get_icon_path.return_value = "/tmp/icons/test.png"
+        mock_resource_manager.validate_resources.return_value = {
+            "resources_dir_exists": True,
+            "missing_icons": [],
+            "missing_sounds": [],
+        }
+
+        indicator = TrayIndicator(
+            speech_engine=MagicMock(),
+            text_injector=MagicMock(),
+        )
+        return indicator, mock_keyboard_inst, mock_switcher_inst
+
+    def test_cycle_shortcut_registered_when_configured(self):
+        """A configured cycle shortcut is registered as an extra shortcut."""
+        indicator, keyboard, _ = self._make_indicator(cycle_shortcut="alt+alt")
+
+        keyboard.register_extra_shortcut.assert_called_once_with(
+            "cycle_language", "alt+alt", indicator._on_cycle_language
+        )
+
+    def test_cycle_shortcut_skipped_when_disabled(self):
+        """No extra shortcut is registered when cycle_language is empty."""
+        _, keyboard, _ = self._make_indicator(cycle_shortcut="")
+
+        keyboard.register_extra_shortcut.assert_not_called()
+
+    def test_on_cycle_language_delegates_to_switcher(self):
+        """The cycle shortcut callback delegates to LanguageSwitcher.cycle."""
+        indicator, _, switcher = self._make_indicator()
+
+        indicator._on_cycle_language()
+
+        switcher.cycle.assert_called_once()
+
+    def test_update_cycle_shortcut_registers_new(self):
+        """update_cycle_shortcut re-registers the extra binding live."""
+        indicator, keyboard, _ = self._make_indicator()
+        keyboard.register_extra_shortcut.reset_mock()
+        keyboard.register_extra_shortcut.return_value = True
+
+        result = indicator.update_cycle_shortcut("shift+shift")
+
+        self.assertTrue(result)
+        keyboard.unregister_extra_shortcut.assert_called_with("cycle_language")
+        keyboard.register_extra_shortcut.assert_called_once_with(
+            "cycle_language", "shift+shift", indicator._on_cycle_language
+        )
+
+    def test_update_cycle_shortcut_empty_disables(self):
+        """update_cycle_shortcut('') unregisters without re-registering."""
+        indicator, keyboard, _ = self._make_indicator(cycle_shortcut="alt+alt")
+        keyboard.register_extra_shortcut.reset_mock()
+
+        result = indicator.update_cycle_shortcut("")
+
+        self.assertTrue(result)
+        keyboard.unregister_extra_shortcut.assert_called_with("cycle_language")
+        keyboard.register_extra_shortcut.assert_not_called()
+
+    def test_language_menu_activation_calls_switch_to(self):
+        """Activating an active radio item switches the language."""
+        indicator, _, switcher = self._make_indicator()
+        widget = MagicMock()
+        widget.get_active.return_value = True
+
+        indicator._on_language_menu_activated(widget, "ca")
+
+        switcher.switch_to.assert_called_once_with("ca")
+
+    def test_language_menu_activation_ignores_deactivation(self):
+        """Radio items being deactivated do not trigger a switch."""
+        indicator, _, switcher = self._make_indicator()
+        widget = MagicMock()
+        widget.get_active.return_value = False
+
+        indicator._on_language_menu_activated(widget, "ca")
+
+        switcher.switch_to.assert_not_called()
+
+    def test_language_menu_activation_respects_syncing_guard(self):
+        """No switch is triggered while the submenu is being rebuilt."""
+        indicator, _, switcher = self._make_indicator()
+        indicator._syncing_language_menu = True
+        widget = MagicMock()
+        widget.get_active.return_value = True
+
+        indicator._on_language_menu_activated(widget, "ca")
+
+        switcher.switch_to.assert_not_called()
+
+    def test_rebuild_language_submenu_creates_one_item_per_language(self):
+        """The submenu gets one radio item per effective language."""
+        indicator, _, switcher = self._make_indicator()
+        switcher.get_effective_languages.return_value = ["en-us", "ca", "es"]
+        switcher.get_current_language.return_value = "ca"
+        submenu = MagicMock()
+        submenu.get_children.return_value = []
+        indicator._language_submenu = submenu
+
+        indicator._rebuild_language_submenu()
+
+        self.assertEqual(submenu.append.call_count, 3)
+        submenu.show_all.assert_called_once()
+        self.assertFalse(indicator._syncing_language_menu)
+
+    def test_settings_dialog_close_rebuilds_submenu(self):
+        """Closing the settings dialog re-syncs the Language submenu."""
+        indicator, _, _ = self._make_indicator()
+        indicator._rebuild_language_submenu = MagicMock()
+        dialog = MagicMock()
+
+        indicator._on_settings_dialog_response(dialog, mock_gtk.ResponseType.CLOSE)
+
+        indicator._rebuild_language_submenu.assert_called_once()
+        dialog.destroy.assert_called_once()

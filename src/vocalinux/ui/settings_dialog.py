@@ -29,7 +29,11 @@ from gi.repository import Gdk, GLib, Gtk, Pango  # noqa: E402
 
 from ..common_types import RecognitionState  # noqa: E402
 from ..speech_recognition.silero_vad import is_silero_available  # noqa: E402
-from ..utils.vosk_model_info import SUPPORTED_LANGUAGES, VOSK_MODEL_INFO  # noqa: E402
+from ..utils.vosk_model_info import (  # noqa: E402
+    SUPPORTED_LANGUAGES,
+    VOSK_MODEL_INFO,
+    is_vosk_model_downloaded,
+)
 from ..utils.whispercpp_model_info import MODEL_SIZES as WHISPERCPP_MODEL_SIZES
 from ..utils.whispercpp_model_info import (
     WHISPERCPP_MODEL_INFO,
@@ -47,6 +51,7 @@ from .keyboard_backends import (  # noqa: E402
     SHORTCUT_GROUPS,
     SHORTCUT_MODES,
     SUPPORTED_SHORTCUTS,
+    shortcuts_conflict,
 )
 
 # Avoid circular imports for type checking
@@ -653,32 +658,7 @@ def _get_recommended_whisper_model() -> tuple:
 
 def _is_vosk_model_downloaded(size: str, language: str) -> bool:
     """Check if a VOSK model is downloaded."""
-    if size not in VOSK_MODEL_INFO:
-        return False
-
-    # Auto-detect is not supported by VOSK, fall back to en-us
-    if language == "auto":
-        language = "en-us"
-    if language not in VOSK_MODEL_INFO[size]["languages"]:
-        # Runtime falls back to the small model of the same language
-        size = "small"
-        if language not in VOSK_MODEL_INFO["small"]["languages"]:
-            language = "en-us"
-
-    model_name = VOSK_MODEL_INFO[size]["languages"][language]
-
-    # Check user's local models directory
-    user_model_path = os.path.join(MODELS_DIR, model_name)
-    if os.path.exists(user_model_path):
-        return True
-
-    # Check system-wide installation directories
-    for system_dir in SYSTEM_MODELS_DIRS:
-        system_model_path = os.path.join(system_dir, model_name)
-        if os.path.exists(system_model_path):
-            return True
-
-    return False
+    return is_vosk_model_downloaded(size, language)
 
 
 def _get_recommended_vosk_model() -> tuple:
@@ -924,6 +904,7 @@ class SettingsDialog(Gtk.Dialog):
         config_manager: "ConfigManager",
         speech_engine: "SpeechRecognitionManager",
         shortcut_update_callback: callable = None,
+        cycle_shortcut_update_callback: callable = None,
     ):
         super().__init__(title="Vocalinux Settings", transient_for=parent, flags=0)
         self.set_decorated(True)  # Force window decorations (close button) on all WMs
@@ -948,6 +929,9 @@ class SettingsDialog(Gtk.Dialog):
         self.config_manager = config_manager
         self.speech_engine = speech_engine
         self.shortcut_update_callback = shortcut_update_callback
+        self.cycle_shortcut_update_callback = cycle_shortcut_update_callback
+        self._syncing_cycle_shortcut = False  # Flag to prevent recursive cycle-combo handling
+        self._syncing_favorites = False  # Flag to prevent recursive favorites handling
         self._test_active = False
         self._test_result = ""
         self._initializing = True  # Flag to prevent auto-apply during initialization
@@ -1631,6 +1615,191 @@ class SettingsDialog(Gtk.Dialog):
         # Update UI based on initial mode
         self._update_shortcut_ui_for_mode(current_mode)
 
+        self._build_language_switching_group()
+
+    def _build_language_switching_group(self):
+        """Build the Quick Language Switching group on the Shortcuts tab."""
+        group = PreferencesGroup(
+            title="Quick Language Switching",
+            description="Cycle through your favorite languages with a shortcut or the tray menu",
+        )
+
+        # Cycle shortcut combo ("" = disabled)
+        self.cycle_shortcut_combo = Gtk.ComboBoxText()
+        self.cycle_shortcut_combo.set_size_request(200, -1)
+        self.cycle_shortcut_combo.set_tooltip_text(
+            "Double-tap this key to switch to the next favorite language"
+        )
+        _prevent_scroll_on_hover(self.cycle_shortcut_combo)
+
+        self.cycle_shortcut_combo.append("", "Disabled")
+        for group_label, shortcut_ids in SHORTCUT_GROUPS.items():
+            separator_id = f"__separator_{group_label}__"
+            self.cycle_shortcut_combo.append(separator_id, f"── {group_label} ──")
+            for shortcut_id in shortcut_ids:
+                display_name = SHORTCUT_DISPLAY_NAMES.get(shortcut_id, shortcut_id)
+                self.cycle_shortcut_combo.append(shortcut_id, display_name)
+
+        current_cycle = self.config_manager.get_str("shortcuts", "cycle_language", "")
+        if not self.cycle_shortcut_combo.set_active_id(current_cycle):
+            self.cycle_shortcut_combo.set_active_id("")
+
+        cycle_row = PreferenceRow(
+            title="Cycle Language Key",
+            subtitle="Double-tap to switch to the next favorite language",
+            widget=self.cycle_shortcut_combo,
+        )
+        group.add_row(cycle_row)
+
+        # Favorite languages picker
+        favorites_row = Gtk.ListBoxRow()
+        favorites_row.set_activatable(False)
+        favorites_row.get_style_context().add_class("preference-row")
+
+        favorites_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        favorites_box.set_margin_top(12)
+        favorites_box.set_margin_bottom(12)
+        favorites_box.set_margin_start(16)
+        favorites_box.set_margin_end(16)
+
+        favorites_title = Gtk.Label(label="Favorite Languages", xalign=0)
+        favorites_box.pack_start(favorites_title, False, False, 0)
+
+        favorites_tip = Gtk.Label(
+            label="Shown in the tray Language menu and used by the cycle shortcut. "
+            "Languages unsupported by the current engine are skipped.",
+            xalign=0,
+            wrap=True,
+        )
+        favorites_tip.get_style_context().add_class("tip-label")
+        favorites_box.pack_start(favorites_tip, False, False, 0)
+
+        favorites = self.config_manager.get_list(
+            "speech_recognition", "favorite_languages", ["auto", "en-us"]
+        )
+        flow = Gtk.FlowBox()
+        flow.set_selection_mode(Gtk.SelectionMode.NONE)
+        flow.set_max_children_per_line(3)
+        self.favorite_language_checks = {}
+        for code, info in SUPPORTED_LANGUAGES.items():
+            check = Gtk.CheckButton.new_with_label(info["name"])
+            check.set_active(code in favorites)
+            check.connect("toggled", self._on_favorite_language_toggled, code)
+            self.favorite_language_checks[code] = check
+            flow.add(check)
+        favorites_box.pack_start(flow, False, False, 0)
+
+        favorites_row.add(favorites_box)
+        group.add_row(favorites_row)
+
+        self.shortcuts_tab.pack_start(group, False, False, 0)
+
+        # Feedback label for cycle-shortcut changes
+        cycle_info_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        cycle_info_box.get_style_context().add_class("info-box")
+        cycle_info_box.set_margin_start(4)
+        cycle_info_box.set_margin_end(4)
+        cycle_info_box.set_margin_top(4)
+
+        cycle_info_icon = Gtk.Image.new_from_icon_name(
+            "dialog-information-symbolic", Gtk.IconSize.MENU
+        )
+        cycle_info_box.pack_start(cycle_info_icon, False, False, 0)
+
+        self.cycle_shortcut_info_label = Gtk.Label(
+            label="Pick a different key than the voice-typing shortcut.",
+            xalign=0,
+            wrap=True,
+        )
+        self.cycle_shortcut_info_label.get_style_context().add_class("tip-label")
+        cycle_info_box.pack_start(self.cycle_shortcut_info_label, True, True, 0)
+
+        self.shortcuts_tab.pack_start(cycle_info_box, False, False, 0)
+
+        self.cycle_shortcut_combo.connect("changed", self._on_cycle_shortcut_changed)
+
+    def _revert_cycle_shortcut_combo(self):
+        """Reset the cycle combo to the saved config value without re-triggering."""
+        current = self.config_manager.get_str("shortcuts", "cycle_language", "")
+        self._syncing_cycle_shortcut = True
+        if not self.cycle_shortcut_combo.set_active_id(current):
+            self.cycle_shortcut_combo.set_active_id("")
+        self._syncing_cycle_shortcut = False
+
+    def _on_cycle_shortcut_changed(self, widget):
+        """Handle cycle-language shortcut selection change."""
+        if self._initializing or self._syncing_cycle_shortcut:
+            return
+
+        shortcut_id = self.cycle_shortcut_combo.get_active_id()
+        if shortcut_id is None:
+            return
+
+        # Ignore separator entries (used for grouped display)
+        if shortcut_id.startswith("__separator_"):
+            self._revert_cycle_shortcut_combo()
+            return
+
+        if shortcut_id:
+            toggle_shortcut = self.config_manager.get_str(
+                "shortcuts", "toggle_recognition", "ctrl+ctrl"
+            )
+            if shortcuts_conflict(shortcut_id, toggle_shortcut):
+                self.cycle_shortcut_info_label.set_markup(
+                    "<span foreground='#c01c28'>This key conflicts with the "
+                    "voice-typing shortcut. Pick a different one.</span>"
+                )
+                self._revert_cycle_shortcut_combo()
+                return
+
+        self.config_manager.set("shortcuts", "cycle_language", shortcut_id)
+        self.config_manager.save_config()
+
+        display_name = (
+            SHORTCUT_DISPLAY_NAMES.get(shortcut_id, shortcut_id) if shortcut_id else "Disabled"
+        )
+        logger.info(f"Cycle-language shortcut changed to: {display_name}")
+
+        if self.cycle_shortcut_update_callback:
+            success = self.cycle_shortcut_update_callback(shortcut_id)
+            if success:
+                self.cycle_shortcut_info_label.set_markup(
+                    f"<span foreground='#26a269'>Cycle shortcut set to "
+                    f"<b>{display_name}</b>. Active now!</span>"
+                )
+            else:
+                self.cycle_shortcut_info_label.set_markup(
+                    f"<i>Cycle shortcut set to <b>{display_name}</b>. "
+                    f"Restart the app for the change to take full effect.</i>"
+                )
+        else:
+            self.cycle_shortcut_info_label.set_markup(
+                f"<i>Cycle shortcut set to <b>{display_name}</b>. "
+                f"Restart the app for the change to take full effect.</i>"
+            )
+
+    def _on_favorite_language_toggled(self, widget, code):
+        """Handle toggling a favorite language checkbox."""
+        if self._initializing or self._syncing_favorites:
+            return
+
+        new_favorites = [
+            lang_code
+            for lang_code, check in self.favorite_language_checks.items()
+            if check.get_active()
+        ]
+
+        if not new_favorites:
+            # Keep at least one favorite: revert this uncheck
+            self._syncing_favorites = True
+            widget.set_active(True)
+            self._syncing_favorites = False
+            return
+
+        self.config_manager.set("speech_recognition", "favorite_languages", new_favorites)
+        self.config_manager.save_config()
+        logger.info(f"Favorite languages updated: {new_favorites}")
+
     def _update_shortcut_ui_for_mode(self, mode: str):
         """Update the shortcut UI based on the selected mode."""
         if mode == "toggle":
@@ -1695,6 +1864,17 @@ class SettingsDialog(Gtk.Dialog):
         # Ignore separator entries (used for grouped display)
         if shortcut_id.startswith("__separator_"):
             # Revert to the previously saved shortcut
+            current = self.config_manager.get_str("shortcuts", "toggle_recognition", "ctrl+ctrl")
+            self.shortcut_combo.set_active_id(current)
+            return
+
+        # The toggle shortcut must not share a key with the cycle-language one
+        cycle_shortcut = self.config_manager.get_str("shortcuts", "cycle_language", "")
+        if cycle_shortcut and shortcuts_conflict(shortcut_id, cycle_shortcut):
+            self.shortcut_info_label.set_markup(
+                "<span foreground='#c01c28'>This key conflicts with the "
+                "cycle-language shortcut. Pick a different one.</span>"
+            )
             current = self.config_manager.get_str("shortcuts", "toggle_recognition", "ctrl+ctrl")
             self.shortcut_combo.set_active_id(current)
             return

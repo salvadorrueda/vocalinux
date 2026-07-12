@@ -1,3 +1,14 @@
+"""Language registry and VOSK model metadata."""
+
+import os
+
+# Models directory
+MODELS_DIR = os.path.expanduser("~/.local/share/vocalinux/models")
+SYSTEM_MODELS_DIRS = [
+    "/usr/local/share/vocalinux/models",
+    "/usr/share/vocalinux/models",
+]
+
 # Language definitions with display names and Whisper/VOSK codes
 # Supported languages for speech recognition
 SUPPORTED_LANGUAGES = {
@@ -108,3 +119,33 @@ VOSK_MODEL_INFO = {
         },
     },
 }
+
+
+def is_vosk_model_downloaded(size: str, language: str) -> bool:
+    """Check if a VOSK model is downloaded for the given size and language."""
+    if size not in VOSK_MODEL_INFO:
+        return False
+
+    # Auto-detect is not supported by VOSK, fall back to en-us
+    if language == "auto":
+        language = "en-us"
+    if language not in VOSK_MODEL_INFO[size]["languages"]:
+        # Runtime falls back to the small model of the same language
+        size = "small"
+        if language not in VOSK_MODEL_INFO["small"]["languages"]:
+            language = "en-us"
+
+    model_name = VOSK_MODEL_INFO[size]["languages"][language]
+
+    # Check user's local models directory
+    user_model_path = os.path.join(MODELS_DIR, model_name)
+    if os.path.exists(user_model_path):
+        return True
+
+    # Check system-wide installation directories
+    for system_dir in SYSTEM_MODELS_DIRS:
+        system_model_path = os.path.join(system_dir, model_name)
+        if os.path.exists(system_model_path):
+            return True
+
+    return False

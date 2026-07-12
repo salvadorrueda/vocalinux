@@ -205,3 +205,63 @@ class TestConfigManagerShortcuts(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSettingsDialogLanguageSwitchingSection(unittest.TestCase):
+    """Test cases for the Quick Language Switching group (source inspection)."""
+
+    def setUp(self):
+        """Set up test fixtures."""
+        self.source_code = _get_source_code()
+
+    def test_language_switching_group_built(self):
+        """The Quick Language Switching group is built from the shortcuts section."""
+        self.assertIn("def _build_language_switching_group(self)", self.source_code)
+        self.assertIn("self._build_language_switching_group()", self.source_code)
+
+    def test_cycle_shortcut_combo_created_with_disabled_entry(self):
+        """The cycle combo exists and offers a Disabled entry."""
+        self.assertIn("self.cycle_shortcut_combo = Gtk.ComboBoxText()", self.source_code)
+        self.assertIn('self.cycle_shortcut_combo.append("", "Disabled")', self.source_code)
+
+    def test_cycle_shortcut_read_from_config(self):
+        """The cycle shortcut is loaded from shortcuts.cycle_language."""
+        self.assertIn(
+            'self.config_manager.get_str("shortcuts", "cycle_language", "")', self.source_code
+        )
+
+    def test_cycle_shortcut_saved_to_config(self):
+        """Changing the cycle combo persists to config."""
+        self.assertIn(
+            'self.config_manager.set("shortcuts", "cycle_language", shortcut_id)',
+            self.source_code,
+        )
+
+    def test_cycle_shortcut_conflict_validation(self):
+        """The cycle shortcut is validated against the toggle shortcut."""
+        self.assertIn("shortcuts_conflict(shortcut_id, toggle_shortcut)", self.source_code)
+
+    def test_toggle_shortcut_conflict_validation(self):
+        """The toggle shortcut is validated against the cycle shortcut."""
+        self.assertIn("shortcuts_conflict(shortcut_id, cycle_shortcut)", self.source_code)
+
+    def test_cycle_shortcut_live_update_callback(self):
+        """The cycle shortcut change is applied live via the callback."""
+        self.assertIn("cycle_shortcut_update_callback: callable = None", self.source_code)
+        self.assertIn("self.cycle_shortcut_update_callback(shortcut_id)", self.source_code)
+
+    def test_favorites_checkbuttons_created(self):
+        """Favorite-language checkboxes are created per supported language."""
+        self.assertIn("self.favorite_language_checks", self.source_code)
+        self.assertIn("def _on_favorite_language_toggled(self, widget, code)", self.source_code)
+
+    def test_favorites_saved_to_config(self):
+        """Toggling favorites persists the ordered list."""
+        self.assertIn(
+            'self.config_manager.set("speech_recognition", "favorite_languages", new_favorites)',
+            self.source_code,
+        )
+
+    def test_favorites_cannot_be_emptied(self):
+        """Unchecking the last favorite reverts the toggle."""
+        self.assertIn("if not new_favorites:", self.source_code)

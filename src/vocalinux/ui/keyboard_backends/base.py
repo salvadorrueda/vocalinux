@@ -90,6 +90,21 @@ SHORTCUT_MODE_DISPLAY_NAMES = {
 
 DEFAULT_SHORTCUT = "ctrl+ctrl"
 
+# Physical keys watched by each modifier name. "ctrl" (either side) overlaps
+# with "left_ctrl"/"right_ctrl", so shortcuts sharing any physical key conflict.
+MODIFIER_PHYSICAL_KEYS = {
+    "ctrl": frozenset({"left_ctrl", "right_ctrl"}),
+    "alt": frozenset({"left_alt", "right_alt"}),
+    "shift": frozenset({"left_shift", "right_shift"}),
+    "super": frozenset({"left_super", "right_super"}),
+    "left_ctrl": frozenset({"left_ctrl"}),
+    "left_alt": frozenset({"left_alt"}),
+    "left_shift": frozenset({"left_shift"}),
+    "right_ctrl": frozenset({"right_ctrl"}),
+    "right_alt": frozenset({"right_alt"}),
+    "right_shift": frozenset({"right_shift"}),
+}
+
 # Supported shortcut modes
 SHORTCUT_MODES = {
     "toggle": "Toggle (double-tap to start/stop)",
@@ -139,6 +154,28 @@ def parse_shortcut(shortcut_string: str) -> str:
     return SUPPORTED_SHORTCUTS[shortcut_lower]
 
 
+def shortcuts_conflict(shortcut_a: str, shortcut_b: str) -> bool:
+    """
+    Check whether two shortcuts watch overlapping physical keys.
+
+    "ctrl+ctrl" (either side) conflicts with "left_ctrl+left_ctrl" because
+    both react to the left Ctrl key.
+
+    Args:
+        shortcut_a: First shortcut string (e.g., "ctrl+ctrl")
+        shortcut_b: Second shortcut string (e.g., "left_ctrl+left_ctrl")
+
+    Returns:
+        True if the shortcuts share at least one physical key
+
+    Raises:
+        ValueError: If either shortcut string is not recognized
+    """
+    keys_a = MODIFIER_PHYSICAL_KEYS.get(parse_shortcut(shortcut_a), frozenset())
+    keys_b = MODIFIER_PHYSICAL_KEYS.get(parse_shortcut(shortcut_b), frozenset())
+    return bool(keys_a & keys_b)
+
+
 class KeyboardBackend(ABC):
     """
     Abstract base class for keyboard backends.
@@ -162,6 +199,9 @@ class KeyboardBackend(ABC):
         self._shortcut = shortcut
         self._mode = mode
         self._modifier_key = parse_shortcut(shortcut)
+        # Additional named double-tap bindings, independent from the primary
+        # shortcut/mode: name -> (shortcut, modifier_key, callback)
+        self._extra_bindings: dict = {}
 
     @property
     def shortcut(self) -> str:
@@ -260,3 +300,46 @@ class KeyboardBackend(ABC):
             callback: Function to call when the shortcut key is released
         """
         self.key_release_callback = callback
+
+    def register_extra_shortcut(self, name: str, shortcut: str, callback: Callback) -> None:
+        """
+        Register an additional named double-tap binding.
+
+        Extra bindings always trigger on double-tap, regardless of the
+        primary shortcut's mode.
+
+        Args:
+            name: Unique name identifying the binding (e.g., "cycle_language")
+            shortcut: The shortcut string to listen for (e.g., "alt+alt")
+            callback: Function to call when the double-tap is detected
+
+        Raises:
+            ValueError: If the shortcut string is not recognized
+        """
+        modifier_key = parse_shortcut(shortcut)
+        self._extra_bindings[name] = (shortcut, modifier_key, callback)
+
+    def unregister_extra_shortcut(self, name: str) -> None:
+        """Remove a named extra binding; no-op if it doesn't exist."""
+        self._extra_bindings.pop(name, None)
+
+    def set_extra_shortcut(self, name: str, shortcut: str) -> None:
+        """
+        Update the shortcut of an existing extra binding.
+
+        Args:
+            name: The binding name
+            shortcut: The new shortcut string
+
+        Raises:
+            KeyError: If no binding with that name exists
+            ValueError: If the shortcut string is not recognized
+        """
+        _, _, callback = self._extra_bindings[name]
+        modifier_key = parse_shortcut(shortcut)
+        self._extra_bindings[name] = (shortcut, modifier_key, callback)
+
+    def iter_extra_bindings(self):
+        """Yield (name, shortcut, modifier_key, callback) for each extra binding."""
+        for name, (shortcut, modifier_key, callback) in list(self._extra_bindings.items()):
+            yield name, shortcut, modifier_key, callback

@@ -20,6 +20,7 @@ from .base import (
     KeyboardBackend,
     get_shortcut_display_name,
     parse_shortcut,
+    shortcuts_conflict,
 )
 
 logger = logging.getLogger(__name__)
@@ -167,4 +168,5 @@ __all__ = [
     "DEFAULT_SHORTCUT",
     "DEFAULT_SHORTCUT_MODE",
     "parse_shortcut",
+    "shortcuts_conflict",
 ]

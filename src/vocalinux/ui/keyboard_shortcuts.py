@@ -23,6 +23,7 @@ from .keyboard_backends import (
     SUPPORTED_SHORTCUTS,
     DesktopEnvironment,
     create_backend,
+    shortcuts_conflict,
 )
 
 logger = logging.getLogger(__name__)
@@ -77,6 +78,7 @@ class KeyboardShortcutManager:
         self.active = False
         self._shortcut = shortcut
         self._mode = mode
+        self._extra_shortcuts: dict = {}  # name -> shortcut string
 
         # Create the appropriate backend
         self.backend_instance = create_backend(
@@ -229,6 +231,16 @@ class KeyboardShortcutManager:
         if self.backend_instance:
             self.backend_instance.set_shortcut(shortcut)
 
+        # Defensive: the settings dialog should prevent this, but never leave
+        # an extra binding sharing a physical key with the new primary.
+        for name, extra_shortcut in list(self._extra_shortcuts.items()):
+            if shortcuts_conflict(extra_shortcut, shortcut):
+                logger.warning(
+                    f"Extra shortcut '{name}' ({extra_shortcut}) conflicts with new "
+                    f"primary shortcut {shortcut}; unregistering it"
+                )
+                self.unregister_extra_shortcut(name)
+
         # Restart if it was active
         if was_active:
             # Clear all callbacks first to prevent stale registrations
@@ -341,6 +353,52 @@ class KeyboardShortcutManager:
         else:
             logger.info(f"Registered release callback for: {self.shortcut_display_name}")
 
+    def register_extra_shortcut(
+        self, name: str, shortcut: str, callback: Callable[[], None]
+    ) -> bool:
+        """
+        Register an additional named double-tap shortcut (e.g., cycle language).
+
+        Extra shortcuts always trigger on double-tap, independent of the
+        primary shortcut's mode, and must not share a physical key with the
+        primary shortcut.
+
+        Args:
+            name: Unique name identifying the binding (e.g., "cycle_language")
+            shortcut: The shortcut string (e.g., "alt+alt")
+            callback: Function to call when the double-tap is detected
+
+        Returns:
+            True if registered, False if invalid, conflicting, or no backend
+        """
+        if self.backend_instance is None:
+            logger.warning(f"Cannot register extra shortcut '{name}': no backend available")
+            return False
+
+        if shortcut not in SUPPORTED_SHORTCUTS:
+            logger.error(f"Invalid extra shortcut for '{name}': {shortcut}")
+            return False
+
+        if shortcuts_conflict(shortcut, self._shortcut):
+            logger.error(
+                f"Extra shortcut '{name}' ({shortcut}) conflicts with the primary "
+                f"shortcut {self._shortcut}; not registering"
+            )
+            return False
+
+        self.backend_instance.register_extra_shortcut(name, shortcut, callback)
+        self._extra_shortcuts[name] = shortcut
+        logger.info(
+            f"Registered extra shortcut '{name}': {SHORTCUT_DISPLAY_NAMES.get(shortcut, shortcut)}"
+        )
+        return True
+
+    def unregister_extra_shortcut(self, name: str) -> None:
+        """Remove a named extra shortcut; no-op if it doesn't exist."""
+        self._extra_shortcuts.pop(name, None)
+        if self.backend_instance is not None:
+            self.backend_instance.unregister_extra_shortcut(name)
+
     @property
     def listener(self):
         """
@@ -389,4 +447,5 @@ __all__ = [
     "SHORTCUT_MODES",
     "DEFAULT_SHORTCUT",
     "DEFAULT_SHORTCUT_MODE",
+    "shortcuts_conflict",
 ]
