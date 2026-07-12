@@ -696,5 +696,77 @@ class TestShortcutParseFunction(unittest.TestCase):
         self.assertEqual(result, "left_shift")
 
 
+class TestExtraShortcuts(unittest.TestCase):
+    """Test cases for extra shortcuts on the manager (e.g., cycle language)."""
+
+    def setUp(self):
+        """Set up for tests."""
+        self.backend_patch = patch("vocalinux.ui.keyboard_shortcuts.create_backend")
+        self.mock_create_backend = self.backend_patch.start()
+        self.mock_backend = MagicMock()
+        self.mock_backend.start.return_value = True
+        self.mock_create_backend.return_value = self.mock_backend
+        self.ksm = KeyboardShortcutManager(shortcut="ctrl+ctrl")
+
+    def tearDown(self):
+        """Clean up after tests."""
+        self.backend_patch.stop()
+
+    def test_register_extra_shortcut_delegates_to_backend(self):
+        """A valid, non-conflicting extra shortcut is registered on the backend."""
+        callback = MagicMock()
+        result = self.ksm.register_extra_shortcut("cycle_language", "alt+alt", callback)
+
+        self.assertTrue(result)
+        self.mock_backend.register_extra_shortcut.assert_called_once_with(
+            "cycle_language", "alt+alt", callback
+        )
+
+    def test_register_extra_shortcut_rejects_unsupported(self):
+        """An unsupported shortcut string is rejected."""
+        result = self.ksm.register_extra_shortcut("cycle_language", "bogus", MagicMock())
+
+        self.assertFalse(result)
+        self.mock_backend.register_extra_shortcut.assert_not_called()
+
+    def test_register_extra_shortcut_rejects_conflict_with_primary(self):
+        """An extra shortcut sharing a key with the primary is rejected."""
+        result = self.ksm.register_extra_shortcut(
+            "cycle_language", "left_ctrl+left_ctrl", MagicMock()
+        )
+
+        self.assertFalse(result)
+        self.mock_backend.register_extra_shortcut.assert_not_called()
+
+    def test_register_extra_shortcut_without_backend(self):
+        """Registration fails gracefully when no backend is available."""
+        self.mock_create_backend.return_value = None
+        ksm = KeyboardShortcutManager()
+        result = ksm.register_extra_shortcut("cycle_language", "alt+alt", MagicMock())
+        self.assertFalse(result)
+
+    def test_unregister_extra_shortcut(self):
+        """Unregistering removes the binding from the backend."""
+        self.ksm.register_extra_shortcut("cycle_language", "alt+alt", MagicMock())
+        self.ksm.unregister_extra_shortcut("cycle_language")
+        self.mock_backend.unregister_extra_shortcut.assert_called_with("cycle_language")
+
+    def test_restart_with_shortcut_unregisters_conflicting_extra(self):
+        """Changing the primary to a key used by an extra drops the extra."""
+        self.ksm.register_extra_shortcut("cycle_language", "alt+alt", MagicMock())
+
+        self.ksm.restart_with_shortcut("alt+alt")
+
+        self.mock_backend.unregister_extra_shortcut.assert_called_with("cycle_language")
+
+    def test_restart_with_shortcut_keeps_non_conflicting_extra(self):
+        """Changing the primary to an unrelated key keeps the extra binding."""
+        self.ksm.register_extra_shortcut("cycle_language", "alt+alt", MagicMock())
+
+        self.ksm.restart_with_shortcut("shift+shift")
+
+        self.mock_backend.unregister_extra_shortcut.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

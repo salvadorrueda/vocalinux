@@ -31,8 +31,10 @@ from gi.repository import GdkPixbuf, Gio, GLib, GObject, Gtk
 from ..common_types import RecognitionState, SpeechRecognitionManagerProtocol, TextInjectorProtocol
 from ..suspend_handler import SuspendHandler
 from ..utils.resource_manager import ResourceManager
+from ..utils.vosk_model_info import SUPPORTED_LANGUAGES
 from .config_manager import ConfigManager
 from .keyboard_shortcuts import KeyboardShortcutManager
+from .language_switcher import LanguageSwitcher
 from .settings_dialog import SettingsDialog
 
 logger = logging.getLogger(__name__)
@@ -79,6 +81,12 @@ class TrayIndicator:
         self.text_injector = text_injector
         self.config_manager = ConfigManager()  # Added: Initialize ConfigManager
         self._syncing_autostart_menu = False
+        self._syncing_language_menu = False
+
+        # Quick language switching shared by the tray submenu and the
+        # cycle-language shortcut
+        self.language_switcher = LanguageSwitcher(self.config_manager, self.speech_engine)
+        self.language_switcher.add_listener(self._on_language_switched)
 
         # Get configured shortcut and mode from config
         shortcut = self.config_manager.get_str("shortcuts", "toggle_recognition", "ctrl+ctrl")
@@ -143,6 +151,14 @@ class TrayIndicator:
             # Register press/release callbacks for push-to-talk mode
             self.shortcut_manager.register_press_callback(self._start_recognition)
             self.shortcut_manager.register_release_callback(self._stop_recognition)
+
+        # Register the cycle-language shortcut if configured
+        self.shortcut_manager.unregister_extra_shortcut("cycle_language")
+        cycle_shortcut = self.config_manager.get_str("shortcuts", "cycle_language", "")
+        if cycle_shortcut:
+            self.shortcut_manager.register_extra_shortcut(
+                "cycle_language", cycle_shortcut, self._on_cycle_language
+            )
 
         # Start the keyboard shortcut manager
         self.shortcut_manager.start()
@@ -225,6 +241,14 @@ class TrayIndicator:
         self._update_autostart_checkbox()
 
         self._add_menu_separator()
+
+        self._language_menu_item = Gtk.MenuItem.new_with_label("Language")
+        self._language_submenu = Gtk.Menu()
+        self._language_menu_item.set_submenu(self._language_submenu)
+        self.menu.append(self._language_menu_item)
+        self._language_submenu.connect("show", self._on_language_submenu_shown)
+        self._rebuild_language_submenu()
+
         self._add_menu_item("Settings", self._on_settings_clicked)
         self._add_menu_item("View Logs", self._on_logs_clicked)
         self._add_menu_separator()
@@ -361,6 +385,55 @@ class TrayIndicator:
         self.menu.append(item)
         return item
 
+    def _rebuild_language_submenu(self):
+        """Rebuild the Language submenu from the effective favorite languages."""
+        if not hasattr(self, "_language_submenu"):
+            return False
+
+        for child in self._language_submenu.get_children():
+            self._language_submenu.remove(child)
+
+        current = self.language_switcher.get_current_language()
+        self._syncing_language_menu = True
+        try:
+            group_owner = None
+            for code in self.language_switcher.get_effective_languages():
+                label = SUPPORTED_LANGUAGES.get(code, {}).get("name", code)
+                if group_owner is None:
+                    item = Gtk.RadioMenuItem.new_with_label([], label)
+                    group_owner = item
+                else:
+                    item = Gtk.RadioMenuItem.new_with_label_from_widget(group_owner, label)
+                item.set_active(code == current)
+                item.connect("activate", self._on_language_menu_activated, code)
+                self._language_submenu.append(item)
+        finally:
+            self._syncing_language_menu = False
+
+        self._language_submenu.show_all()
+        return False  # Safe to schedule via GLib.idle_add
+
+    def _on_language_submenu_shown(self, menu):
+        """Re-sync the submenu whenever it opens (favorites/language may have changed)."""
+        self._rebuild_language_submenu()
+
+    def _on_language_menu_activated(self, widget, code):
+        """Handle selection of a language in the tray submenu."""
+        if self._syncing_language_menu or not widget.get_active():
+            return
+
+        logger.info(f"Language selected from tray menu: {code}")
+        self.language_switcher.switch_to(code)
+
+    def _on_language_switched(self, code):
+        """Reflect a completed language switch in the submenu (worker thread)."""
+        GLib.idle_add(self._rebuild_language_submenu)
+
+    def _on_cycle_language(self):
+        """Handle the cycle-language keyboard shortcut."""
+        logger.debug("Cycle-language shortcut detected")
+        self.language_switcher.cycle()
+
     def _update_autostart_checkbox(self):
         """Update the autostart checkbox state based on current config."""
         from . import autostart_manager
@@ -470,6 +543,7 @@ class TrayIndicator:
             config_manager=self.config_manager,
             speech_engine=self.speech_engine,
             shortcut_update_callback=self.update_shortcut,
+            cycle_shortcut_update_callback=self.update_cycle_shortcut,
         )
 
         # Connect to the response signal
@@ -494,6 +568,8 @@ class TrayIndicator:
         # With auto-apply, we just close the dialog on any response
         if response == Gtk.ResponseType.CLOSE or response == Gtk.ResponseType.DELETE_EVENT:
             logger.info("Settings dialog closed.")
+            # Pick up language/favorites changes made in the dialog
+            self._rebuild_language_submenu()
             dialog.destroy()
 
     def update_shortcut(self, shortcut: str, mode: Optional[str] = None) -> bool:
@@ -531,6 +607,25 @@ class TrayIndicator:
 
         logger.debug("No changes needed - shortcut and mode unchanged")
         return True
+
+    def update_cycle_shortcut(self, shortcut: str) -> bool:
+        """
+        Update the cycle-language keyboard shortcut live.
+
+        Args:
+            shortcut: The new shortcut string, or "" to disable cycling
+
+        Returns:
+            True if the shortcut was applied (or disabled), False otherwise
+        """
+        self.shortcut_manager.unregister_extra_shortcut("cycle_language")
+        if not shortcut:
+            logger.info("Cycle-language shortcut disabled")
+            return True
+
+        return self.shortcut_manager.register_extra_shortcut(
+            "cycle_language", shortcut, self._on_cycle_language
+        )
 
     def _on_about_clicked(self, widget):
         """Handle click on the About menu item."""

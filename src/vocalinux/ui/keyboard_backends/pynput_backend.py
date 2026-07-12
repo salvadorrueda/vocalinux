@@ -112,6 +112,9 @@ class PynputKeyboardBackend(KeyboardBackend):
         self.last_key_press_time = 0
         self.double_tap_threshold = 0.3  # seconds
         self.current_keys = set()
+        # Per-binding double-tap state for extra bindings:
+        # name -> {"last_key_press_time": float, "last_trigger_time": float}
+        self._extra_tap_state: dict = {}
 
         if not PYNPUT_AVAILABLE:
             logger.error("pynput library not available")
@@ -121,11 +124,17 @@ class PynputKeyboardBackend(KeyboardBackend):
         return MODIFIER_KEY_MAP.get(self._modifier_key)
 
     def _matches_configured_modifier(self, key) -> bool:
-        key_variants = self._get_key_variants(self._modifier_key)
+        return self._matches_modifier(key, self._modifier_key)
+
+    def _matches_modifier(self, key, modifier_name: str) -> bool:
+        key_variants = self._get_key_variants(modifier_name)
         if key_variants:
             return key in key_variants
 
-        target_key = self._get_target_key()
+        if modifier_name == self._modifier_key:
+            target_key = self._get_target_key()
+        else:
+            target_key = MODIFIER_KEY_MAP.get(modifier_name)
         if target_key is None:
             return False
 
@@ -223,8 +232,32 @@ class PynputKeyboardBackend(KeyboardBackend):
                         threading.Thread(target=self.key_press_callback, daemon=True).start()
 
                 self.last_key_press_time = current_time
+
+            self._dispatch_extra_bindings(key)
         except Exception as e:
             logger.error(f"Error in pynput key press handling: {e}")
+
+    def _dispatch_extra_bindings(self, key) -> None:
+        """Run double-tap detection for each extra binding on a key press."""
+        for name, _shortcut, modifier_key, callback in self.iter_extra_bindings():
+            if not self._matches_modifier(key, modifier_key):
+                continue
+
+            current_time = time.time()
+            state = self._extra_tap_state.setdefault(
+                name, {"last_key_press_time": 0.0, "last_trigger_time": 0.0}
+            )
+
+            if (
+                current_time - state["last_key_press_time"] < self.double_tap_threshold
+                and callback is not None
+                and current_time - state["last_trigger_time"] > 0.5
+            ):
+                logger.debug(f"Double-tap {modifier_key} detected for '{name}' (pynput)")
+                state["last_trigger_time"] = current_time
+                threading.Thread(target=callback, daemon=True).start()
+
+            state["last_key_press_time"] = current_time
 
     def _on_release(self, key) -> None:
         """Handle key release events."""

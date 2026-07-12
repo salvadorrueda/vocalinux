@@ -32,6 +32,10 @@ DEFAULT_CONFIG = {
         "remote_api_url": "",  # Remote speech recognition server URL (e.g. http://192.168.1.100:8080)
         "remote_api_key": "",  # Remote server API key (optional)
         "remote_api_endpoint": "/inference",  # Remote server API endpoint format (/v1/audio/transcriptions or /inference)
+        "favorite_languages": [
+            "auto",
+            "en-us",
+        ],  # Languages offered in the tray quick-switch menu and cycle shortcut
     },
     "audio": {
         "device_index": None,  # Audio input device index (None for system default)
@@ -45,6 +49,7 @@ DEFAULT_CONFIG = {
         "mode": "toggle",  # "toggle" or "push_to_talk"
         # Supported values: "ctrl+ctrl", "alt+alt", "shift+shift"
         # These represent double-tap shortcuts for the respective modifier keys
+        "cycle_language": "",  # Double-tap shortcut to cycle favorite languages ("" = disabled)
     },
     "ui": {
         "start_minimized": False,
@@ -243,6 +248,13 @@ class ConfigManager:
             return float(value)
         except (TypeError, ValueError):
             return default
+
+    def get_list(self, section: str, key: str, default: Optional[list] = None) -> list:
+        """Get a configuration value as a list (returns a copy)."""
+        value = self.get(section, key, None)
+        if isinstance(value, list):
+            return list(value)
+        return list(default) if default is not None else []
 
     def get_optional_int(
         self, section: str, key: str, default: Optional[int] = None

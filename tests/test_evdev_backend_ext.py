@@ -977,3 +977,64 @@ class TestEvdevKeyboardBackendGetTargetKeyCodes:
 
         assert 42 in result  # KEY_LEFTSHIFT
         assert 54 in result  # KEY_RIGHTSHIFT
+
+
+class TestEvdevExtraBindings:
+    """Test extra-binding dispatch in _handle_key_event."""
+
+    def _press(self, backend, code):
+        mock_device = MagicMock()
+        mock_event = MagicMock()
+        mock_event.code = code
+        mock_event.value = 1
+        backend._handle_key_event(mock_event, mock_device)
+
+    def test_extra_binding_double_tap_fires_callback(self):
+        """Double-tapping the extra binding's key fires its callback, not the primary."""
+        backend = EvdevKeyboardBackend(shortcut="ctrl+ctrl", mode="toggle")
+        primary_callback = MagicMock()
+        extra_callback = MagicMock()
+        backend.register_toggle_callback(primary_callback)
+        backend.register_extra_shortcut("cycle_language", "alt+alt", extra_callback)
+
+        self._press(backend, 56)  # KEY_LEFTALT
+        self._press(backend, 56)
+        time.sleep(0.1)
+
+        assert extra_callback.called
+        assert not primary_callback.called
+
+    def test_extra_binding_single_tap_does_not_fire(self):
+        """A single tap of the extra key does not trigger the callback."""
+        backend = EvdevKeyboardBackend(shortcut="ctrl+ctrl", mode="toggle")
+        extra_callback = MagicMock()
+        backend.register_extra_shortcut("cycle_language", "alt+alt", extra_callback)
+
+        self._press(backend, 56)
+        time.sleep(0.1)
+
+        assert not extra_callback.called
+
+    def test_extra_binding_ignores_primary_key(self):
+        """Double-tapping the primary key does not trigger the extra callback."""
+        backend = EvdevKeyboardBackend(shortcut="ctrl+ctrl", mode="toggle")
+        extra_callback = MagicMock()
+        backend.register_extra_shortcut("cycle_language", "alt+alt", extra_callback)
+
+        self._press(backend, 29)  # KEY_LEFTCTRL
+        self._press(backend, 29)
+        time.sleep(0.1)
+
+        assert not extra_callback.called
+
+    def test_extra_binding_fires_in_push_to_talk_mode(self):
+        """Extra bindings are double-tap even when the primary is push-to-talk."""
+        backend = EvdevKeyboardBackend(shortcut="ctrl+ctrl", mode="push_to_talk")
+        extra_callback = MagicMock()
+        backend.register_extra_shortcut("cycle_language", "alt+alt", extra_callback)
+
+        self._press(backend, 100)  # KEY_RIGHTALT
+        self._press(backend, 100)
+        time.sleep(0.1)
+
+        assert extra_callback.called

@@ -272,3 +272,80 @@ class TestConfigManagerUpdateDictRecursive:
                 )
 
                 assert manager.config["level1"]["level2"]["level3"] == "updated"
+
+
+class TestLanguageSwitchingConfig:
+    """Tests for the quick-language-switching config keys and get_list."""
+
+    def test_favorite_languages_default(self):
+        """DEFAULT_CONFIG seeds favorite_languages with auto and en-us."""
+        from vocalinux.ui.config_manager import DEFAULT_CONFIG
+
+        assert DEFAULT_CONFIG["speech_recognition"]["favorite_languages"] == ["auto", "en-us"]
+
+    def test_cycle_language_default_disabled(self):
+        """The cycle-language shortcut is disabled by default."""
+        from vocalinux.ui.config_manager import DEFAULT_CONFIG
+
+        assert DEFAULT_CONFIG["shortcuts"]["cycle_language"] == ""
+
+    def test_get_list_returns_copy(self):
+        """get_list returns a copy, not the internal list."""
+        from vocalinux.ui.config_manager import ConfigManager
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_file = Path(tmp_dir) / "config.json"
+            config_file.write_text(json.dumps({}))
+
+            with patch.dict(os.environ, {"XDG_CONFIG_HOME": tmp_dir}, clear=False):
+                manager = ConfigManager()
+                result = manager.get_list("speech_recognition", "favorite_languages")
+                result.append("mutated")
+                again = manager.get_list("speech_recognition", "favorite_languages")
+                assert "mutated" not in again
+
+    def test_get_list_non_list_value_returns_default(self):
+        """get_list falls back to the default when the value is not a list."""
+        from vocalinux.ui.config_manager import ConfigManager
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_file = Path(tmp_dir) / "config.json"
+            config_file.write_text(json.dumps({}))
+
+            with patch.dict(os.environ, {"XDG_CONFIG_HOME": tmp_dir}, clear=False):
+                manager = ConfigManager()
+                manager.config["speech_recognition"]["favorite_languages"] = "not-a-list"
+                assert manager.get_list("speech_recognition", "favorite_languages", ["en-us"]) == [
+                    "en-us"
+                ]
+
+    def test_get_list_missing_key_returns_empty_by_default(self):
+        """get_list with no default returns an empty list for missing keys."""
+        from vocalinux.ui.config_manager import ConfigManager
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_file = Path(tmp_dir) / "config.json"
+            config_file.write_text(json.dumps({}))
+
+            with patch.dict(os.environ, {"XDG_CONFIG_HOME": tmp_dir}, clear=False):
+                manager = ConfigManager()
+                assert manager.get_list("speech_recognition", "nonexistent") == []
+
+    def test_user_list_replaces_default_wholesale(self):
+        """A user-configured list replaces (not merges with) the default."""
+        from vocalinux.ui.config_manager import ConfigManager
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_file = Path(tmp_dir) / "config.json"
+            config_file.write_text(json.dumps({}))
+
+            with patch.dict(os.environ, {"XDG_CONFIG_HOME": tmp_dir}, clear=False):
+                manager = ConfigManager()
+                manager._update_dict_recursive(
+                    manager.config,
+                    {"speech_recognition": {"favorite_languages": ["ca", "es"]}},
+                )
+                assert manager.get_list("speech_recognition", "favorite_languages") == [
+                    "ca",
+                    "es",
+                ]

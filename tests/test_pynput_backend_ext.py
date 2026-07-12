@@ -569,3 +569,81 @@ class TestPynputKeyboardBackendModifierMatching:
         time.sleep(0.1)
 
         assert callback.called
+
+
+class TestPynputExtraBindings:
+    """Test extra-binding dispatch (e.g., cycle-language shortcut)."""
+
+    def _variants(self, mapping):
+        def get(modifier, default=None):
+            return mapping.get(modifier, default if default is not None else set())
+
+        return get
+
+    @patch("vocalinux.ui.keyboard_backends.pynput_backend.PYNPUT_AVAILABLE", True)
+    @patch("vocalinux.ui.keyboard_backends.pynput_backend.MODIFIER_KEY_VARIANTS")
+    def test_extra_binding_double_tap_fires_callback(self, mock_variants):
+        """Double-tapping the extra binding's key fires its callback, not the primary."""
+        mock_variants.get.side_effect = self._variants(
+            {"ctrl": {MockKey.ctrl, MockKey.ctrl_l}, "alt": {MockKey.alt, MockKey.alt_l}}
+        )
+        backend = PynputKeyboardBackend(shortcut="ctrl+ctrl", mode="toggle")
+        primary_callback = MagicMock()
+        extra_callback = MagicMock()
+        backend.register_toggle_callback(primary_callback)
+        backend.register_extra_shortcut("cycle_language", "alt+alt", extra_callback)
+
+        backend._on_press(MockKey.alt_l)
+        backend._on_press(MockKey.alt_l)
+        time.sleep(0.1)
+
+        assert extra_callback.called
+        assert not primary_callback.called
+
+    @patch("vocalinux.ui.keyboard_backends.pynput_backend.PYNPUT_AVAILABLE", True)
+    @patch("vocalinux.ui.keyboard_backends.pynput_backend.MODIFIER_KEY_VARIANTS")
+    def test_extra_binding_single_tap_does_not_fire(self, mock_variants):
+        """A single tap of the extra key does not trigger the callback."""
+        mock_variants.get.side_effect = self._variants({"alt": {MockKey.alt, MockKey.alt_l}})
+        backend = PynputKeyboardBackend(shortcut="ctrl+ctrl", mode="toggle")
+        extra_callback = MagicMock()
+        backend.register_extra_shortcut("cycle_language", "alt+alt", extra_callback)
+
+        backend._on_press(MockKey.alt_l)
+        time.sleep(0.1)
+
+        assert not extra_callback.called
+
+    @patch("vocalinux.ui.keyboard_backends.pynput_backend.PYNPUT_AVAILABLE", True)
+    @patch("vocalinux.ui.keyboard_backends.pynput_backend.MODIFIER_KEY_VARIANTS")
+    def test_extra_binding_tap_state_independent_from_primary(self, mock_variants):
+        """Pressing the primary key then the extra key must not count as a double-tap."""
+        mock_variants.get.side_effect = self._variants(
+            {"ctrl": {MockKey.ctrl, MockKey.ctrl_l}, "alt": {MockKey.alt, MockKey.alt_l}}
+        )
+        backend = PynputKeyboardBackend(shortcut="ctrl+ctrl", mode="toggle")
+        extra_callback = MagicMock()
+        backend.register_extra_shortcut("cycle_language", "alt+alt", extra_callback)
+
+        backend._on_press(MockKey.ctrl_l)
+        backend._on_press(MockKey.alt_l)
+        time.sleep(0.1)
+
+        assert not extra_callback.called
+
+    @patch("vocalinux.ui.keyboard_backends.pynput_backend.PYNPUT_AVAILABLE", True)
+    @patch("vocalinux.ui.keyboard_backends.pynput_backend.MODIFIER_KEY_VARIANTS")
+    def test_extra_binding_fires_in_push_to_talk_mode(self, mock_variants):
+        """Extra bindings are double-tap even when the primary is push-to-talk."""
+        mock_variants.get.side_effect = self._variants(
+            {"ctrl": {MockKey.ctrl, MockKey.ctrl_l}, "alt": {MockKey.alt, MockKey.alt_l}}
+        )
+        backend = PynputKeyboardBackend(shortcut="ctrl+ctrl", mode="push_to_talk")
+        extra_callback = MagicMock()
+        backend.register_extra_shortcut("cycle_language", "alt+alt", extra_callback)
+
+        backend._on_press(MockKey.alt_l)
+        backend._on_press(MockKey.alt_l)
+        time.sleep(0.1)
+
+        assert extra_callback.called

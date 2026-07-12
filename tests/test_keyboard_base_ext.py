@@ -365,3 +365,82 @@ class TestKeyboardBackend:
         assert backend.active is True
         backend.active = False
         assert backend.active is False
+
+
+class TestShortcutsConflict:
+    """Test the shortcuts_conflict() function."""
+
+    def test_same_shortcut_conflicts(self):
+        from vocalinux.ui.keyboard_backends.base import shortcuts_conflict
+
+        assert shortcuts_conflict("ctrl+ctrl", "ctrl+ctrl") is True
+
+    def test_either_side_conflicts_with_specific_side(self):
+        from vocalinux.ui.keyboard_backends.base import shortcuts_conflict
+
+        assert shortcuts_conflict("ctrl+ctrl", "left_ctrl+left_ctrl") is True
+        assert shortcuts_conflict("right_alt+right_alt", "alt+alt") is True
+
+    def test_opposite_sides_do_not_conflict(self):
+        from vocalinux.ui.keyboard_backends.base import shortcuts_conflict
+
+        assert shortcuts_conflict("left_ctrl+left_ctrl", "right_ctrl+right_ctrl") is False
+
+    def test_different_modifiers_do_not_conflict(self):
+        from vocalinux.ui.keyboard_backends.base import shortcuts_conflict
+
+        assert shortcuts_conflict("alt+alt", "ctrl+ctrl") is False
+        assert shortcuts_conflict("left_shift+left_shift", "left_ctrl+left_ctrl") is False
+
+    def test_invalid_shortcut_raises(self):
+        from vocalinux.ui.keyboard_backends.base import shortcuts_conflict
+
+        with pytest.raises(ValueError):
+            shortcuts_conflict("bogus", "ctrl+ctrl")
+
+
+class TestExtraBindings:
+    """Test the extra-binding registry on KeyboardBackend."""
+
+    def test_register_extra_shortcut(self):
+        backend = ConcreteKeyboardBackend()
+        callback = MagicMock()
+        backend.register_extra_shortcut("cycle_language", "alt+alt", callback)
+
+        bindings = list(backend.iter_extra_bindings())
+        assert bindings == [("cycle_language", "alt+alt", "alt", callback)]
+
+    def test_register_invalid_shortcut_raises(self):
+        backend = ConcreteKeyboardBackend()
+        with pytest.raises(ValueError):
+            backend.register_extra_shortcut("cycle_language", "bogus", MagicMock())
+
+    def test_unregister_extra_shortcut(self):
+        backend = ConcreteKeyboardBackend()
+        backend.register_extra_shortcut("cycle_language", "alt+alt", MagicMock())
+        backend.unregister_extra_shortcut("cycle_language")
+        assert list(backend.iter_extra_bindings()) == []
+
+    def test_unregister_missing_binding_is_noop(self):
+        backend = ConcreteKeyboardBackend()
+        backend.unregister_extra_shortcut("nonexistent")  # Should not raise
+
+    def test_set_extra_shortcut_updates_keeping_callback(self):
+        backend = ConcreteKeyboardBackend()
+        callback = MagicMock()
+        backend.register_extra_shortcut("cycle_language", "alt+alt", callback)
+        backend.set_extra_shortcut("cycle_language", "shift+shift")
+
+        bindings = list(backend.iter_extra_bindings())
+        assert bindings == [("cycle_language", "shift+shift", "shift", callback)]
+
+    def test_set_extra_shortcut_missing_binding_raises(self):
+        backend = ConcreteKeyboardBackend()
+        with pytest.raises(KeyError):
+            backend.set_extra_shortcut("nonexistent", "alt+alt")
+
+    def test_primary_binding_untouched_by_extras(self):
+        backend = ConcreteKeyboardBackend(shortcut="ctrl+ctrl")
+        backend.register_extra_shortcut("cycle_language", "alt+alt", MagicMock())
+        assert backend.shortcut == "ctrl+ctrl"
+        assert backend.modifier_key == "ctrl"
