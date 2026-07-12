@@ -1741,9 +1741,29 @@ class SpeechRecognitionManager:
                 os.remove(temp_file)
             raise
 
+    def _resolve_vosk_model_name(self) -> str:
+        """Get the VOSK model name for the current size and language.
+
+        Falls back to the small model when the selected size has no model
+        for this language (e.g. Catalan or Italian only ship a small model).
+        """
+        if self.model_size not in self.vosk_model_map:
+            raise ValueError(f"Unknown model size: {self.model_size}")
+        model_name = self.vosk_model_map[self.model_size]
+        if not model_name:
+            model_name = self.vosk_model_map.get("small")
+            if model_name:
+                logger.warning(
+                    f"No VOSK '{self.model_size}' model for language "
+                    f"'{self.language}'; falling back to small model '{model_name}'"
+                )
+        if not model_name:
+            raise ValueError(f"No VOSK model available for language '{self.language}'")
+        return model_name
+
     def _get_vosk_model_path(self) -> str:
         """Get the path to the VOSK model based on the selected size and language."""
-        model_name = self.vosk_model_map.get(self.model_size, self.vosk_model_map["small"])
+        model_name = self._resolve_vosk_model_name()
 
         # First, check user's local models directory
         user_model_path = os.path.join(MODELS_DIR, model_name)
@@ -1787,15 +1807,7 @@ class SpeechRecognitionManager:
 
         self._download_cancelled = False
 
-        model_urls = {
-            "small": f"https://alphacephei.com/vosk/models/{self.vosk_model_map['small']}.zip",
-            "medium": f"https://alphacephei.com/vosk/models/{self.vosk_model_map['medium']}.zip",
-            "large": f"https://alphacephei.com/vosk/models/{self.vosk_model_map['large']}.zip",
-        }
-
-        url = model_urls.get(self.model_size)
-        if not url:
-            raise ValueError(f"Unknown model size: {self.model_size}")
+        url = f"https://alphacephei.com/vosk/models/{self._resolve_vosk_model_name()}.zip"
 
         model_name = os.path.basename(url).replace(".zip", "")
 

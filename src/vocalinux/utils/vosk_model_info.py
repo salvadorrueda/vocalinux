@@ -22,6 +22,11 @@ SUPPORTED_LANGUAGES = {
         "whisper": "es",
         "vosk": "vosk-model-small-es-0.42",
     },
+    "ca": {
+        "name": "Catalan",
+        "whisper": "ca",
+        "vosk": "vosk-model-small-ca-0.4",
+    },
     "fr": {
         "name": "French",
         "whisper": "fr",
@@ -65,6 +70,7 @@ VOSK_MODEL_INFO = {
             "en-in": "vosk-model-small-en-in-0.4",
             "hi": "vosk-model-small-hi-0.22",
             "es": "vosk-model-small-es-0.42",
+            "ca": "vosk-model-small-ca-0.4",
             "fr": "vosk-model-small-fr-0.22",
             "de": "vosk-model-small-de-0.15",
             "it": "vosk-model-small-it-0.22",

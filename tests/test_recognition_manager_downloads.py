@@ -217,6 +217,87 @@ class TestDownloadVoskModel:
                     manager._download_vosk_model()
 
 
+class TestVoskModelSizeFallback:
+    """Languages with only a small VOSK model must fall back to it for medium/large."""
+
+    def _make_catalan_manager(self):
+        manager = _make_manager(engine="vosk")
+        manager.language = "ca"
+        manager.vosk_model_map = {
+            "small": "vosk-model-small-ca-0.4",
+            "medium": None,
+            "large": None,
+        }
+        return manager
+
+    def test_get_vosk_model_path_falls_back_to_small(self):
+        """Medium size with a small-only language resolves to the small model path."""
+        manager = self._make_catalan_manager()
+        manager.model_size = "medium"
+
+        with patch("os.path.exists", return_value=False):
+            path = manager._get_vosk_model_path()
+
+        assert path.endswith("vosk-model-small-ca-0.4")
+
+    def test_download_vosk_model_falls_back_to_small_url(self, tmp_path):
+        """Large size with a small-only language downloads the small model zip."""
+        manager = self._make_catalan_manager()
+        manager.model_size = "large"
+
+        zip_data = BytesIO()
+        with REAL_ZIPFILE.ZipFile(zip_data, "w") as zf:
+            zf.writestr("vosk-model-small-ca-0.4/am/model.pkl", "x" * 100)
+        zip_bytes = zip_data.getvalue()
+
+        mock_requests = MagicMock()
+        mock_response = MagicMock()
+        mock_response.headers = {"content-length": str(len(zip_bytes))}
+        mock_response.iter_content.return_value = [zip_bytes]
+        mock_requests.get.return_value = mock_response
+        mock_requests.exceptions.RequestException = Exception
+
+        with patch.dict("sys.modules", {"requests": mock_requests}):
+            with patch(
+                "vocalinux.speech_recognition.recognition_manager.MODELS_DIR", str(tmp_path)
+            ):
+                manager._download_vosk_model()
+
+        requested_url = mock_requests.get.call_args[0][0]
+        assert requested_url == "https://alphacephei.com/vosk/models/vosk-model-small-ca-0.4.zip"
+
+    def test_resolve_vosk_model_name_unknown_size_raises(self):
+        """An unknown model size still raises ValueError."""
+        manager = self._make_catalan_manager()
+        manager.model_size = "huge"
+
+        with pytest.raises(ValueError, match="Unknown model size"):
+            manager._resolve_vosk_model_name()
+
+    def test_resolve_vosk_model_name_no_model_at_all_raises(self):
+        """No model in any size raises ValueError."""
+        manager = self._make_catalan_manager()
+        manager.vosk_model_map = {"small": None, "medium": None, "large": None}
+        manager.model_size = "medium"
+
+        with pytest.raises(ValueError, match="No VOSK model available"):
+            manager._resolve_vosk_model_name()
+
+    def test_fallback_is_general_for_italian(self):
+        """The fallback also fixes pre-existing small-only languages like Italian."""
+        from vocalinux.utils.vosk_model_info import VOSK_MODEL_INFO
+
+        manager = _make_manager(engine="vosk")
+        manager.language = "it"
+        manager.vosk_model_map = {
+            size: VOSK_MODEL_INFO[size]["languages"].get("it")
+            for size in ("small", "medium", "large")
+        }
+        manager.model_size = "medium"
+
+        assert manager._resolve_vosk_model_name() == "vosk-model-small-it-0.22"
+
+
 class TestAudioReconnection:
     """Test audio reconnection logic."""
 
