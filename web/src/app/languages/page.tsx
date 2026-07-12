@@ -24,6 +24,15 @@ const supportedLanguages = [
     modelSizes: ["tiny", "base", "small", "medium", "large"],
   },
   {
+    code: "ca",
+    name: "Catalan",
+    nativeName: "Català",
+    flag: "🇦🇩",
+    description: "Catalan voice dictation and transcription",
+    engines: ["whisper.cpp", "Whisper", "VOSK"],
+    modelSizes: ["tiny", "base", "small", "medium", "large"],
+  },
+  {
     code: "fr",
     name: "French",
     nativeName: "Français",
@@ -112,11 +121,13 @@ const features = [
 export const metadata: Metadata = buildPageMetadata({
   title: "Multilingual Voice Dictation - Spanish, French, German, & More | Vocalinux",
   description:
-    "Dictate in 9+ languages including Spanish, French, German, Italian, Portuguese, Russian, Chinese, and Hindi. Free offline multilingual voice typing for Linux.",
+    "Dictate in 10+ languages including Spanish, Catalan, French, German, Italian, Portuguese, Russian, Chinese, and Hindi. Free offline multilingual voice typing for Linux.",
   path: "/languages",
   keywords: [
     "multilingual voice dictation",
     "Spanish voice typing",
+    "Catalan voice typing",
+    "Catalan speech to text",
     "French speech to text",
     "German dictation software",
     "Italian voice recognition",
@@ -132,10 +143,10 @@ export default function LanguagesPage() {
   const articleJsonLd = {
     "@context": "https://schema.org",
     "@type": "Article",
-    headline: "Multilingual Voice Dictation for Linux - 9+ Languages Supported",
+    headline: "Multilingual Voice Dictation for Linux - 10+ Languages Supported",
     description:
-      "Complete guide to Vocalinux multilingual voice dictation. Dictate in Spanish, French, German, Italian, Portuguese, Russian, Chinese, Hindi, and more.",
-    dateModified: "2026-02-22",
+      "Complete guide to Vocalinux multilingual voice dictation. Dictate in Spanish, Catalan, French, German, Italian, Portuguese, Russian, Chinese, Hindi, and more.",
+    dateModified: "2026-07-12",
     author: {
       "@type": "Person",
       name: "Jatin K Malik",
@@ -162,13 +173,13 @@ export default function LanguagesPage() {
       <section>
         <p className="mb-4 inline-flex items-center gap-2 rounded-full border border-primary/30 bg-primary/10 px-4 py-1.5 text-sm font-medium text-primary">
           <Languages className="h-4 w-4" />
-          9+ Languages
+          10+ Languages
         </p>
         <h1 className="mb-5 text-4xl font-bold tracking-tight sm:text-5xl md:text-6xl">
           Multilingual Voice Dictation for Linux
         </h1>
         <p className="mb-8 max-w-4xl text-lg text-muted-foreground">
-          Dictate in your native language. Vocalinux supports 9+ languages with full offline
+          Dictate in your native language. Vocalinux supports 10+ languages with full offline
           processing - no cloud required, no data leaves your machine.
         </p>
       </section>

@@ -657,8 +657,13 @@ def _is_vosk_model_downloaded(size: str, language: str) -> bool:
         return False
 
     # Auto-detect is not supported by VOSK, fall back to en-us
-    if language == "auto" or language not in VOSK_MODEL_INFO[size]["languages"]:
+    if language == "auto":
         language = "en-us"
+    if language not in VOSK_MODEL_INFO[size]["languages"]:
+        # Runtime falls back to the small model of the same language
+        size = "small"
+        if language not in VOSK_MODEL_INFO["small"]["languages"]:
+            language = "en-us"
 
     model_name = VOSK_MODEL_INFO[size]["languages"][language]
 

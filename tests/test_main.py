@@ -97,6 +97,7 @@ class TestMainModule(unittest.TestCase):
             "en-in",
             "hi",
             "es",
+            "ca",
             "fr",
             "de",
             "it",

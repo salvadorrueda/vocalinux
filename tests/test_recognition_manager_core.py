@@ -827,6 +827,13 @@ class TestReconfiguration(unittest.TestCase):
         manager.reconfigure(language="de", force_download=False)
         self.assertEqual(manager.language, "de")
 
+    def test_reconfigure_language_catalan(self):
+        """Test reconfiguring to Catalan."""
+        manager = SpeechRecognitionManager(engine="vosk", language="en-us")
+
+        manager.reconfigure(language="ca", force_download=False)
+        self.assertEqual(manager.language, "ca")
+
     def test_reconfigure_model_size_only(self):
         """Test reconfiguring only model size."""
         manager = SpeechRecognitionManager(engine="vosk", model_size="small")
