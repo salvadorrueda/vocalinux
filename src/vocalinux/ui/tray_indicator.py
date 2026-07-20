@@ -34,6 +34,8 @@ from ..utils.resource_manager import ResourceManager
 from ..utils.vosk_model_info import SUPPORTED_LANGUAGES
 from .config_manager import ConfigManager
 from .keyboard_shortcuts import KeyboardShortcutManager
+from .language_icon import cache_dir as language_icon_cache_dir
+from .language_icon import ensure_base_icons_cached, render_language_icon
 from .language_switcher import LanguageSwitcher
 from .settings_dialog import SettingsDialog
 
@@ -113,6 +115,10 @@ class TrayIndicator:
             "active": ACTIVE_ICON,
             "processing": PROCESSING_ICON,
         }
+
+        # Last state rendered, so the icon can be regenerated when the
+        # language changes without waiting for the next state transition.
+        self._current_state = RecognitionState.IDLE
 
         # Register for speech recognition state changes
         self.speech_engine.register_state_callback(self._on_recognition_state_changed)
@@ -210,14 +216,20 @@ class TrayIndicator:
                 exists = os.path.exists(path)
                 logger.info(f"Icon '{name}' ({path}): {'exists' if exists else 'missing'}")
 
+        # Generated language icons live in the cache directory; the base icons
+        # are copied there too because AppIndicator takes a single theme path.
+        ensure_base_icons_cached(ICON_DIR)
+        icon_theme_dir = language_icon_cache_dir()
+        logger.info(f"Using generated icon directory: {icon_theme_dir}")
+
         try:
             self.indicator = AppIndicator3.Indicator.new_with_path(
                 APP_ID,
                 DEFAULT_ICON,
                 AppIndicator3.IndicatorCategory.APPLICATION_STATUS,
-                ICON_DIR,
+                icon_theme_dir,
             )
-            self.indicator.set_icon_theme_path(ICON_DIR)
+            self.indicator.set_icon_theme_path(icon_theme_dir)
             self.indicator.set_status(AppIndicator3.IndicatorStatus.ACTIVE)
         except Exception as e:
             logger.error(f"Failed to create AppIndicator: {e}")
@@ -453,7 +465,15 @@ class TrayIndicator:
             return
 
         code = self.language_switcher.get_current_language()
+        # Kept for panels that do render AppIndicator labels (Unity, some KDE
+        # setups); the icon itself carries the badge everywhere else.
         self.indicator.set_label(self._language_label_text(code), LANGUAGE_LABEL_GUIDE)
+
+        name = SUPPORTED_LANGUAGES.get(code, {}).get("name", code)
+        self.indicator.set_title(f"Vocalinux - {name}")
+
+        # Redraw the icon so the badge follows the new language immediately.
+        self._update_ui(self._current_state)
 
     def _on_cycle_language(self):
         """Handle the cycle-language keyboard shortcut."""
@@ -514,24 +534,44 @@ class TrayIndicator:
         if not hasattr(self, "indicator"):
             return False
 
-        if state == RecognitionState.IDLE:
-            self.indicator.set_icon_full(self.icon_names["default"], "Microphone off")
-            self._set_menu_item_enabled("Start Voice Typing", True)
-            self._set_menu_item_enabled("Stop Voice Typing", False)
-        elif state == RecognitionState.LISTENING:
-            self.indicator.set_icon_full(self.icon_names["active"], "Microphone on")
+        self._current_state = state
+        self.indicator.set_icon_full(*self._icon_name_for_state(state))
+
+        if state in (RecognitionState.LISTENING, RecognitionState.PROCESSING):
             self._set_menu_item_enabled("Start Voice Typing", False)
             self._set_menu_item_enabled("Stop Voice Typing", True)
-        elif state == RecognitionState.PROCESSING:
-            self.indicator.set_icon_full(self.icon_names["processing"], "Processing speech")
-            self._set_menu_item_enabled("Start Voice Typing", False)
-            self._set_menu_item_enabled("Stop Voice Typing", True)
-        elif state == RecognitionState.ERROR:
-            self.indicator.set_icon_full(self.icon_names["default"], "Error")
+        else:
             self._set_menu_item_enabled("Start Voice Typing", True)
             self._set_menu_item_enabled("Stop Voice Typing", False)
 
         return False  # Remove idle callback
+
+    def _icon_name_for_state(self, state: RecognitionState) -> tuple:
+        """
+        Return the (icon_name, description) to show for a recognition state.
+
+        When a specific language is selected, the icon is generated at runtime
+        with the language badge drawn into it, because many panels ignore the
+        AppIndicator label. With "auto" (no badge) the packaged icons are used.
+        """
+        if state == RecognitionState.LISTENING:
+            state_key, description = "active", "Microphone on"
+        elif state == RecognitionState.PROCESSING:
+            state_key, description = "processing", "Processing speech"
+        elif state == RecognitionState.ERROR:
+            state_key, description = "default", "Error"
+        else:
+            state_key, description = "default", "Microphone off"
+
+        badge = self._language_label_text(self.language_switcher.get_current_language())
+        icon_name = render_language_icon(badge, state_key) if badge else ""
+        if icon_name:
+            description = f"{description} ({badge})"
+        else:
+            icon_name = self.icon_names[state_key]
+
+        logger.debug(f"Tray icon for state {state}: {icon_name}")
+        return icon_name, description
 
     def _set_menu_item_enabled(self, label: str, enabled: bool):
         """

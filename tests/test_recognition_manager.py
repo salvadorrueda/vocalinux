@@ -65,9 +65,10 @@ class TestSpeechRecognition(unittest.TestCase):
         mock_audio_feedback.play_stop_sound.reset_mock()
         mock_audio_feedback.play_error_sound.reset_mock()
 
-        # Patch os.makedirs to avoid creating directories
-        self.patcher_makedirs = patch("os.makedirs")
-        self.mock_makedirs = self.patcher_makedirs.start()
+        # os.makedirs is already patched above as self.mockMakeDirs; patching it
+        # twice here left the mock installed for the rest of the suite, because
+        # tearDown stopped the outer patcher before this inner one.
+        self.mock_makedirs = self.makeDirsMock
 
         # Patch os.path.exists to return True for any path
         self.patcher_exists = patch("os.path.exists", return_value=True)
@@ -105,7 +106,6 @@ class TestSpeechRecognition(unittest.TestCase):
         self.mockDownload.stop()
         self.mockCmdProcessor.stop()
 
-        self.patcher_makedirs.stop()
         self.patcher_exists.stop()
         self.patcher_unlink.stop()
         self.patcher_temp.stop()

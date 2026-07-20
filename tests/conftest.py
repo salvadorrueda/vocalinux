@@ -92,6 +92,12 @@ sys.modules["vocalinux.ui.audio_feedback"] = mock_audio_feedback
 
 
 @pytest.fixture(autouse=True)
+def _isolate_cache_dir(tmp_path, monkeypatch):
+    """Keep generated tray icons out of the real user cache directory."""
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+
+
+@pytest.fixture(autouse=True)
 def _suppress_desktop_notifications(request):
     """Patch _show_notification for all tests except those testing it directly."""
     if "show_notification" in request.node.nodeid:

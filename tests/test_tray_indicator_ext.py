@@ -746,6 +746,68 @@ class TestTrayIndicatorLanguageSwitching(unittest.TestCase):
 
         indicator.indicator.set_label.assert_called_with("FR", "XX")
 
+    def test_icon_name_carries_language_badge(self):
+        """With a language selected, the icon is generated with the badge drawn in."""
+        from vocalinux.common_types import RecognitionState
+
+        indicator, _, switcher = self._make_indicator()
+        switcher.get_current_language.return_value = "ca"
+
+        with patch(
+            "vocalinux.ui.tray_indicator.render_language_icon", return_value="generated-icon"
+        ) as render:
+            name, description = indicator._icon_name_for_state(RecognitionState.LISTENING)
+
+        render.assert_called_once_with("CA", "active")
+        self.assertEqual(name, "generated-icon")
+        self.assertIn("CA", description)
+
+    def test_icon_name_falls_back_when_generation_fails(self):
+        """An unwritable icon cache degrades to the packaged icon, not a broken tray."""
+        from vocalinux.common_types import RecognitionState
+
+        indicator, _, switcher = self._make_indicator()
+        switcher.get_current_language.return_value = "ca"
+
+        with patch("vocalinux.ui.tray_indicator.render_language_icon", return_value=""):
+            name, _ = indicator._icon_name_for_state(RecognitionState.LISTENING)
+
+        self.assertEqual(name, "vocalinux-microphone")
+
+    def test_icon_name_falls_back_to_base_icon_for_auto(self):
+        """Auto-detect has no badge, so the packaged icons are used."""
+        from vocalinux.common_types import RecognitionState
+
+        indicator, _, switcher = self._make_indicator()
+        switcher.get_current_language.return_value = "auto"
+
+        name, _ = indicator._icon_name_for_state(RecognitionState.LISTENING)
+
+        self.assertEqual(name, "vocalinux-microphone")
+
+    def test_language_switch_redraws_icon(self):
+        """Switching language updates the icon, not just the (often ignored) label."""
+        indicator, _, switcher = self._make_indicator()
+        switcher.get_current_language.return_value = "es"
+        indicator.indicator.set_icon_full.reset_mock()
+
+        with patch(
+            "vocalinux.ui.tray_indicator.render_language_icon", return_value="generated-icon"
+        ):
+            indicator._on_language_switched("es")
+
+        indicator.indicator.set_icon_full.assert_called()
+        self.assertEqual(indicator.indicator.set_icon_full.call_args[0][0], "generated-icon")
+
+    def test_language_switch_sets_tooltip_title(self):
+        """The readable language name is exposed as a tooltip fallback."""
+        indicator, _, switcher = self._make_indicator()
+        switcher.get_current_language.return_value = "ca"
+
+        indicator._on_language_switched("ca")
+
+        indicator.indicator.set_title.assert_called_with("Vocalinux - Catalan")
+
     def test_settings_dialog_close_updates_language_label(self):
         """Closing the settings dialog also refreshes the tray label."""
         indicator, _, _ = self._make_indicator()
