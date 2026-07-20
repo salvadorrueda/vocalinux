@@ -689,3 +689,69 @@ class TestTrayIndicatorLanguageSwitching(unittest.TestCase):
 
         indicator._rebuild_language_submenu.assert_called_once()
         dialog.destroy.assert_called_once()
+
+    def test_language_label_text_known_languages(self):
+        """Known language codes map to their 2-letter Whisper-derived badge."""
+        indicator, _, _ = self._make_indicator()
+
+        self.assertEqual(indicator._language_label_text("en-us"), "EN")
+        self.assertEqual(indicator._language_label_text("es"), "ES")
+        self.assertEqual(indicator._language_label_text("ca"), "CA")
+
+    def test_language_label_text_auto_is_empty(self):
+        """Auto-detect has no single language, so it shows no badge."""
+        indicator, _, _ = self._make_indicator()
+
+        self.assertEqual(indicator._language_label_text("auto"), "")
+
+    def test_language_label_text_unknown_code_is_empty(self):
+        """An unrecognized language code degrades to no badge instead of raising."""
+        indicator, _, _ = self._make_indicator()
+
+        self.assertEqual(indicator._language_label_text("xx-yy"), "")
+
+    def test_update_language_label_sets_indicator_label(self):
+        """The AppIndicator label reflects the current language's badge."""
+        indicator, _, switcher = self._make_indicator()
+        switcher.get_current_language.return_value = "ca"
+        indicator.indicator.set_label.reset_mock()  # clear the call from init
+
+        indicator._update_language_label()
+
+        indicator.indicator.set_label.assert_called_once_with("CA", "XX")
+
+    def test_update_language_label_auto_clears_label(self):
+        """Auto-detect clears the label instead of showing a stale badge."""
+        indicator, _, switcher = self._make_indicator()
+        switcher.get_current_language.return_value = "auto"
+        indicator.indicator.set_label.reset_mock()  # clear the call from init
+
+        indicator._update_language_label()
+
+        indicator.indicator.set_label.assert_called_once_with("", "XX")
+
+    def test_update_language_label_noop_without_indicator(self):
+        """Refreshing the label before the indicator exists is a safe no-op."""
+        indicator, _, _ = self._make_indicator()
+        del indicator.indicator
+
+        indicator._update_language_label()  # Should not raise
+
+    def test_on_language_switched_refreshes_label(self):
+        """A completed language switch also refreshes the tray label."""
+        indicator, _, switcher = self._make_indicator()
+        switcher.get_current_language.return_value = "fr"
+
+        indicator._on_language_switched("fr")
+
+        indicator.indicator.set_label.assert_called_with("FR", "XX")
+
+    def test_settings_dialog_close_updates_language_label(self):
+        """Closing the settings dialog also refreshes the tray label."""
+        indicator, _, _ = self._make_indicator()
+        indicator._update_language_label = MagicMock()
+        dialog = MagicMock()
+
+        indicator._on_settings_dialog_response(dialog, mock_gtk.ResponseType.CLOSE)
+
+        indicator._update_language_label.assert_called_once()

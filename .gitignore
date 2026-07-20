@@ -159,3 +159,5 @@ opentree.toml
 
 # Sisyphus - local AI agent loop state (per-developer, not shared)
 .sisyphus/
+
+CLAUDE.md

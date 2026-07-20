@@ -51,6 +51,10 @@ DEFAULT_ICON = "vocalinux-microphone-off"
 ACTIVE_ICON = "vocalinux-microphone"
 PROCESSING_ICON = "vocalinux-microphone-process"
 
+# Fixed-width guide for the AppIndicator language label, so the panel
+# doesn't resize when switching between languages (e.g. "" for auto-detect).
+LANGUAGE_LABEL_GUIDE = "XX"
+
 # /dev/input settle-detection tuning (used after resume)
 _INPUT_SETTLE_SECONDS = 2
 _INPUT_MONITOR_CAP_SECONDS = 10
@@ -263,6 +267,7 @@ class TrayIndicator:
 
         # Update the UI based on the initial state
         self._update_ui(RecognitionState.IDLE)
+        self._update_language_label()
 
         return False  # Remove idle callback
 
@@ -428,6 +433,27 @@ class TrayIndicator:
     def _on_language_switched(self, code):
         """Reflect a completed language switch in the submenu (worker thread)."""
         GLib.idle_add(self._rebuild_language_submenu)
+        GLib.idle_add(self._update_language_label)
+
+    def _language_label_text(self, code: str) -> str:
+        """
+        Return the 2-letter tray badge for a language code (e.g. "en-us" -> "EN").
+
+        Returns "" for "auto" (no single language) or an unknown code.
+        """
+        info = SUPPORTED_LANGUAGES.get(code)
+        whisper_code = info.get("whisper") if info else None
+        if not whisper_code:
+            return ""
+        return whisper_code[:2].upper()
+
+    def _update_language_label(self):
+        """Refresh the AppIndicator label with the current language's badge."""
+        if not hasattr(self, "indicator"):
+            return
+
+        code = self.language_switcher.get_current_language()
+        self.indicator.set_label(self._language_label_text(code), LANGUAGE_LABEL_GUIDE)
 
     def _on_cycle_language(self):
         """Handle the cycle-language keyboard shortcut."""
@@ -570,6 +596,7 @@ class TrayIndicator:
             logger.info("Settings dialog closed.")
             # Pick up language/favorites changes made in the dialog
             self._rebuild_language_submenu()
+            self._update_language_label()
             dialog.destroy()
 
     def update_shortcut(self, shortcut: str, mode: Optional[str] = None) -> bool:
