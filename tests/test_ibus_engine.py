@@ -295,9 +295,99 @@ class TestGetCurrentEngine(unittest.TestCase):
         self.assertEqual(result, "xkb:us::eng")
         mock_gnome_fallback.assert_not_called()
 
+    @patch("vocalinux.text_injection.ibus_engine.get_current_engine_gnome_fallback")
+    @patch("vocalinux.text_injection.ibus_engine._is_gnome_session", return_value=True)
+    @patch("vocalinux.text_injection.ibus_engine._is_wayland_session", return_value=False)
+    @patch("subprocess.run")
+    def test_get_current_engine_suspicious_us_default_on_gnome_x11(
+        self, mock_run, mock_wayland, mock_gnome, mock_gnome_fallback
+    ):
+        """GNOME X11 must consult gsettings too, not just Wayland.
+
+        Regression test: ibus-daemon reported a stale xkb:us::eng while the
+        user's active GNOME input source was Catalan. Trusting IBus made every
+        injection restore US English.
+        """
+        mock_run.return_value = MagicMock(stdout="xkb:us::eng\n", stderr="", returncode=0)
+        mock_gnome_fallback.return_value = "xkb:es:cat:cat"
+
+        from vocalinux.text_injection.ibus_engine import get_current_engine
+
+        result = get_current_engine()
+        self.assertEqual(result, "xkb:es:cat:cat")
+        mock_gnome_fallback.assert_called_once()
+
+    @patch("vocalinux.text_injection.ibus_engine.get_current_engine_gnome_fallback")
+    @patch("vocalinux.text_injection.ibus_engine._is_gnome_session", return_value=True)
+    @patch("vocalinux.text_injection.ibus_engine._is_wayland_session", return_value=False)
+    @patch("subprocess.run")
+    def test_get_current_engine_any_bare_xkb_defers_to_gnome(
+        self, mock_run, mock_wayland, mock_gnome, mock_gnome_fallback
+    ):
+        """Any bare xkb:* engine, not just xkb:us::eng, defers to GNOME."""
+        mock_run.return_value = MagicMock(stdout="xkb:gb:extd:eng\n", stderr="", returncode=0)
+        mock_gnome_fallback.return_value = "xkb:es:cat:cat"
+
+        from vocalinux.text_injection.ibus_engine import get_current_engine
+
+        result = get_current_engine()
+        self.assertEqual(result, "xkb:es:cat:cat")
+
+    @patch("vocalinux.text_injection.ibus_engine.get_current_engine_gnome_fallback")
+    @patch("vocalinux.text_injection.ibus_engine._is_gnome_session", return_value=True)
+    @patch("subprocess.run")
+    def test_get_current_engine_real_im_engine_is_trusted(
+        self, mock_run, mock_gnome, mock_gnome_fallback
+    ):
+        """A real IM engine is never second-guessed against gsettings."""
+        mock_run.return_value = MagicMock(stdout="anthy\n", stderr="", returncode=0)
+
+        from vocalinux.text_injection.ibus_engine import get_current_engine
+
+        result = get_current_engine()
+        self.assertEqual(result, "anthy")
+        mock_gnome_fallback.assert_not_called()
+
+    @patch("vocalinux.text_injection.ibus_engine.get_current_engine_gnome_fallback")
+    @patch("vocalinux.text_injection.ibus_engine._is_gnome_session", return_value=True)
+    @patch("subprocess.run")
+    def test_get_current_engine_keeps_ibus_value_when_gnome_agrees(
+        self, mock_run, mock_gnome, mock_gnome_fallback
+    ):
+        """When both sources agree, the value is returned unchanged."""
+        mock_run.return_value = MagicMock(stdout="xkb:es:cat:cat\n", stderr="", returncode=0)
+        mock_gnome_fallback.return_value = "xkb:es:cat:cat"
+
+        from vocalinux.text_injection.ibus_engine import get_current_engine
+
+        self.assertEqual(get_current_engine(), "xkb:es:cat:cat")
+
+
+# A trimmed but realistic slice of `ibus list-engine --name-only` output.
+FAKE_XKB_ENGINES = [
+    "xkb:us::eng",
+    "xkb:us:altgr-intl:eng",
+    "xkb:us:intl:eng",
+    "xkb:gb::eng",
+    "xkb:gb:extd:eng",
+    "xkb:br::por",
+    "xkb:es::spa",
+    "xkb:es:cat:cat",
+    "xkb:es:nodeadkeys:spa",
+]
+
 
 class TestGetCurrentEngineGnomeFallback(unittest.TestCase):
     """Tests for get_current_engine_gnome_fallback function."""
+
+    def setUp(self):
+        """Serve a fixed IBus engine registry instead of shelling out to ibus."""
+        patcher = patch(
+            "vocalinux.text_injection.ibus_engine._list_ibus_xkb_engines",
+            return_value=FAKE_XKB_ENGINES,
+        )
+        self.mock_list_engines = patcher.start()
+        self.addCleanup(patcher.stop)
 
     @patch("vocalinux.text_injection.ibus_engine._is_gnome_session", return_value=False)
     def test_not_gnome_returns_none(self, mock_gnome):
@@ -343,7 +433,8 @@ class TestGetCurrentEngineGnomeFallback(unittest.TestCase):
         from vocalinux.text_injection.ibus_engine import get_current_engine_gnome_fallback
 
         result = get_current_engine_gnome_fallback()
-        self.assertEqual(result, "xkb:br::")
+        # IBus names the plain Brazilian layout xkb:br::por, not xkb:br::
+        self.assertEqual(result, "xkb:br::por")
 
     @patch.dict("os.environ", {"XDG_CURRENT_DESKTOP": "GNOME"})
     @patch("subprocess.run")
@@ -359,7 +450,39 @@ class TestGetCurrentEngineGnomeFallback(unittest.TestCase):
         from vocalinux.text_injection.ibus_engine import get_current_engine_gnome_fallback
 
         result = get_current_engine_gnome_fallback()
-        self.assertEqual(result, "xkb:us::altgr-intl")
+        # The variant belongs in the variant field, not the language field.
+        self.assertEqual(result, "xkb:us:altgr-intl:eng")
+
+    @patch.dict("os.environ", {"XDG_CURRENT_DESKTOP": "GNOME"})
+    @patch("subprocess.run")
+    def test_catalan_source_resolves_to_registered_engine(self, mock_run):
+        """GNOME's 'es+cat' must map to the registered engine xkb:es:cat:cat."""
+        sources_output = "[('xkb', 'es+cat'), ('xkb', 'gb+extd')]"
+        current_output = "uint32 0"
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout=sources_output, stderr=""),
+            MagicMock(returncode=0, stdout=current_output, stderr=""),
+        ]
+
+        from vocalinux.text_injection.ibus_engine import get_current_engine_gnome_fallback
+
+        result = get_current_engine_gnome_fallback()
+        self.assertEqual(result, "xkb:es:cat:cat")
+
+    @patch.dict("os.environ", {"XDG_CURRENT_DESKTOP": "GNOME"})
+    @patch("subprocess.run")
+    def test_unresolvable_source_returns_none(self, mock_run):
+        """A source with no registered IBus engine must not be guessed at."""
+        sources_output = "[('xkb', 'zz+nonesuch')]"
+        current_output = "uint32 0"
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout=sources_output, stderr=""),
+            MagicMock(returncode=0, stdout=current_output, stderr=""),
+        ]
+
+        from vocalinux.text_injection.ibus_engine import get_current_engine_gnome_fallback
+
+        self.assertIsNone(get_current_engine_gnome_fallback())
 
     @patch.dict("os.environ", {"XDG_CURRENT_DESKTOP": "GNOME"})
     @patch("subprocess.run")
@@ -391,7 +514,7 @@ class TestGetCurrentEngineGnomeFallback(unittest.TestCase):
         from vocalinux.text_injection.ibus_engine import get_current_engine_gnome_fallback
 
         result = get_current_engine_gnome_fallback()
-        self.assertEqual(result, "xkb:br::")
+        self.assertEqual(result, "xkb:br::por")
 
     @patch.dict("os.environ", {"XDG_CURRENT_DESKTOP": "GNOME"})
     @patch("subprocess.run")
@@ -406,7 +529,7 @@ class TestGetCurrentEngineGnomeFallback(unittest.TestCase):
         from vocalinux.text_injection.ibus_engine import get_current_engine_gnome_fallback
 
         result = get_current_engine_gnome_fallback()
-        self.assertEqual(result, "xkb:br::")
+        self.assertEqual(result, "xkb:br::por")
 
     @patch.dict("os.environ", {"XDG_CURRENT_DESKTOP": "GNOME"})
     @patch("subprocess.run")
@@ -418,6 +541,83 @@ class TestGetCurrentEngineGnomeFallback(unittest.TestCase):
 
         result = get_current_engine_gnome_fallback()
         self.assertIsNone(result)
+
+
+class TestGnomeSourceToEngine(unittest.TestCase):
+    """Tests for the GNOME input-source -> IBus engine name resolver."""
+
+    def setUp(self):
+        patcher = patch(
+            "vocalinux.text_injection.ibus_engine._list_ibus_xkb_engines",
+            return_value=FAKE_XKB_ENGINES,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_layout_with_variant(self):
+        from vocalinux.text_injection.ibus_engine import _gnome_source_to_engine
+
+        self.assertEqual(_gnome_source_to_engine("es+cat"), "xkb:es:cat:cat")
+
+    def test_layout_without_variant(self):
+        from vocalinux.text_injection.ibus_engine import _gnome_source_to_engine
+
+        self.assertEqual(_gnome_source_to_engine("br"), "xkb:br::por")
+
+    def test_unknown_variant_falls_back_to_plain_layout(self):
+        """An unregistered variant still restores the correct base layout."""
+        from vocalinux.text_injection.ibus_engine import _gnome_source_to_engine
+
+        self.assertEqual(_gnome_source_to_engine("es+nonesuch"), "xkb:es::spa")
+
+    def test_unknown_layout_returns_none(self):
+        from vocalinux.text_injection.ibus_engine import _gnome_source_to_engine
+
+        self.assertIsNone(_gnome_source_to_engine("zz"))
+
+    def test_empty_source_returns_none(self):
+        from vocalinux.text_injection.ibus_engine import _gnome_source_to_engine
+
+        self.assertIsNone(_gnome_source_to_engine(""))
+
+
+class TestListIBusXkbEngines(unittest.TestCase):
+    """Tests for the cached `ibus list-engine` lookup."""
+
+    def setUp(self):
+        from vocalinux.text_injection.ibus_engine import _reset_xkb_engine_cache
+
+        _reset_xkb_engine_cache()
+        self.addCleanup(_reset_xkb_engine_cache)
+
+    @patch("vocalinux.text_injection.ibus_engine.subprocess.run")
+    def test_parses_and_filters_xkb_engines(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout="xkb:es:cat:cat\nanthy\n  xkb:br::por  \n\n",
+        )
+
+        from vocalinux.text_injection.ibus_engine import _list_ibus_xkb_engines
+
+        self.assertEqual(_list_ibus_xkb_engines(), ["xkb:es:cat:cat", "xkb:br::por"])
+
+    @patch("vocalinux.text_injection.ibus_engine.subprocess.run")
+    def test_result_is_cached(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0, stdout="xkb:br::por\n")
+
+        from vocalinux.text_injection.ibus_engine import _list_ibus_xkb_engines
+
+        _list_ibus_xkb_engines()
+        _list_ibus_xkb_engines()
+        mock_run.assert_called_once()
+
+    @patch("vocalinux.text_injection.ibus_engine.subprocess.run")
+    def test_missing_ibus_returns_empty(self, mock_run):
+        mock_run.side_effect = FileNotFoundError("ibus not found")
+
+        from vocalinux.text_injection.ibus_engine import _list_ibus_xkb_engines
+
+        self.assertEqual(_list_ibus_xkb_engines(), [])
 
 
 class TestSwitchEngine(unittest.TestCase):
@@ -438,8 +638,9 @@ class TestSwitchEngine(unittest.TestCase):
         self.assertTrue(result)
         self.assertEqual(mock_run.call_count, 2)
 
+    @patch("vocalinux.text_injection.ibus_engine._is_gnome_session", return_value=False)
     @patch("subprocess.run")
-    def test_switch_engine_failure(self, mock_run):
+    def test_switch_engine_failure(self, mock_run, mock_gnome):
         """Test switching engine failure."""
         # First call: ibus engine <name> (switch)
         # Second call: ibus engine (get current) - returns different engine

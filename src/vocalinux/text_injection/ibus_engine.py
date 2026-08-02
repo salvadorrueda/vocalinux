@@ -24,7 +24,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +78,10 @@ _ENGINE_META = {
     "icon": "audio-input-microphone",
     "layout": "default",
 }
+# Registered xkb:* IBus engine names, filled lazily by _list_ibus_xkb_engines().
+# The IBus engine registry does not change while the session is running.
+_XKB_ENGINE_CACHE: Optional[List[str]] = None
+
 _COMPONENT_META = {
     "version": "1.0",
     "license": "GPL-3.0",
@@ -315,18 +319,93 @@ def _is_gnome_session() -> bool:
     return "GNOME" in desktop.upper()
 
 
+def _list_ibus_xkb_engines() -> List[str]:
+    """
+    Return the registered ``xkb:*`` IBus engine names, cached for the process.
+
+    The registry is static for the lifetime of the session, so we query
+    ``ibus list-engine --name-only`` once and reuse the result.
+    """
+    global _XKB_ENGINE_CACHE
+
+    if _XKB_ENGINE_CACHE is not None:
+        return _XKB_ENGINE_CACHE
+
+    engines: List[str] = []
+    try:
+        result = subprocess.run(
+            ["ibus", "list-engine", "--name-only"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            engines = [
+                line.strip()
+                for line in result.stdout.splitlines()
+                if line.strip().startswith("xkb:")
+            ]
+        else:
+            logger.debug("ibus list-engine failed; cannot resolve XKB engine names")
+    except (subprocess.SubprocessError, FileNotFoundError) as e:
+        logger.debug(f"Could not list IBus engines: {e}")
+
+    _XKB_ENGINE_CACHE = engines
+    return engines
+
+
+def _reset_xkb_engine_cache() -> None:
+    """Clear the cached IBus engine list (test helper)."""
+    global _XKB_ENGINE_CACHE
+    _XKB_ENGINE_CACHE = None
+
+
+def _gnome_source_to_engine(source_id: str) -> Optional[str]:
+    """
+    Translate a GNOME xkb input-source id into a registered IBus engine name.
+
+    GNOME stores xkb sources as ``<layout>[+<variant>]`` (e.g. ``es+cat``),
+    while IBus names them ``xkb:<layout>:<variant>:<language>`` (e.g.
+    ``xkb:es:cat:cat``). The language field cannot be derived from the GNOME
+    id, so we look the name up in the IBus registry instead of guessing it.
+    An earlier version built ``xkb:<layout>::<variant>``, which put the variant
+    in the language slot and produced engine names IBus does not know.
+
+    Args:
+        source_id: The GNOME source id, e.g. ``es+cat`` or ``br``.
+
+    Returns:
+        The matching IBus engine name, or None if nothing matches.
+    """
+    layout, _, variant = source_id.partition("+")
+    if not layout:
+        return None
+
+    engines = _list_ibus_xkb_engines()
+    # Try the exact layout+variant pair first, then the plain layout, so a
+    # variant IBus doesn't know about still restores the right base layout.
+    for prefix in (f"xkb:{layout}:{variant}:", f"xkb:{layout}::"):
+        for name in engines:
+            if name.startswith(prefix):
+                return name
+
+    logger.debug(f"No IBus engine matches GNOME input source '{source_id}'")
+    return None
+
+
 def get_current_engine_gnome_fallback() -> Optional[str]:
     """
     Get the current keyboard layout as an IBus engine name via GNOME settings.
 
-    On GNOME/Wayland, IBus may have no global engine (input sources are managed
-    by Mutter, not ibus-daemon). In that case ``ibus engine`` returns nothing
-    or a misleading ``xkb:us::eng`` default. This function reads the actual
-    keyboard layout from ``org.gnome.desktop.input-sources`` via gsettings.
+    On GNOME, IBus may have no global engine, or a stale one (input sources are
+    managed by GNOME Shell, not ibus-daemon). In that case ``ibus engine``
+    returns nothing or a misleading ``xkb:us::eng`` default. This function reads
+    the actual keyboard layout from ``org.gnome.desktop.input-sources`` via
+    gsettings.
 
     Returns:
-        IBus-format engine name (e.g. ``xkb:br::``) or None if not GNOME
-        or if gsettings fails.
+        IBus-format engine name (e.g. ``xkb:br::por``) or None if not GNOME,
+        if gsettings fails, or if the source has no matching IBus engine.
     """
     if not _is_gnome_session():
         return None
@@ -368,16 +447,14 @@ def get_current_engine_gnome_fallback() -> Optional[str]:
         source_type, source_id = sources[current_idx]
 
         # GNOME uses ('xkb', 'br+dyn') or ('ibus', 'anthy') tuples.
-        # For xkb sources, build an IBus engine name like xkb:<layout>::<variant>
+        # For xkb sources, resolve the id against the IBus engine registry.
         if source_type == "xkb":
-            layout, _, variant = source_id.partition("+")
-            if variant:
-                engine_name = f"xkb:{layout}::{variant}"
-            else:
-                engine_name = f"xkb:{layout}::"
+            engine_name = _gnome_source_to_engine(source_id)
+            if not engine_name:
+                return None
             logger.debug(
-                f"GNOME fallback: current source index {current_idx}, "
-                f"engine name: {engine_name}"
+                f"GNOME fallback: current source index {current_idx} "
+                f"('{source_id}'), engine name: {engine_name}"
             )
             return engine_name
         elif source_type == "ibus":
@@ -402,9 +479,10 @@ def get_current_engine() -> Optional[str]:
     """
     Get the currently active IBus engine name.
 
-    On GNOME/Wayland, IBus may have no global engine set (Mutter manages input
-    sources). In that case ``ibus engine`` can return a misleading
-    ``xkb:us::eng`` default that doesn't match the user's actual keyboard
+    On GNOME, IBus may have no global engine set, or one that has drifted out
+    of sync with the input source GNOME Shell actually has active. In that case
+    ``ibus engine`` can report a bare ``xkb:*`` layout — often the
+    ``xkb:us::eng`` default — that doesn't match the user's real keyboard
     layout. We detect this and fall back to reading the layout from GNOME's
     gsettings so the real layout is preserved during engine restore.
 
@@ -434,21 +512,22 @@ def get_current_engine() -> Optional[str]:
             if not engine:
                 return None
 
-            # On GNOME/Wayland, ``ibus engine`` can return ``xkb:us::eng``
-            # as a default fallback even when the user's actual layout is
-            # different (e.g. Brazilian ABNT2). Detect this suspicious
-            # default and try the GNOME gsettings fallback for the real
-            # layout before trusting the IBus output (see issue #497).
-            if engine == "xkb:us::eng" and _is_gnome_session() and _is_wayland_session():
-                logger.debug(
-                    "ibus engine returned 'xkb:us::eng' on GNOME/Wayland; "
-                    "attempting GNOME gsettings fallback (see #497)"
-                )
+            # A bare ``xkb:*`` engine is pure keyboard-layout passthrough (see
+            # _is_real_ibus_engine), and on GNOME the layout is owned by GNOME
+            # Shell via org.gnome.desktop.input-sources, not by ibus-daemon.
+            # ibus-daemon's global engine routinely drifts from it — commonly
+            # to the ``xkb:us::eng`` default — so whenever the two disagree,
+            # GNOME wins. Restoring the stale IBus value would switch the user
+            # to the wrong layout after every injection (see issue #497).
+            # This applies on X11 as well as Wayland: GNOME Shell manages input
+            # sources in both. Real IM engines (anthy, libpinyin, ...) never use
+            # the ``xkb:`` prefix and are always trusted as reported.
+            if engine.startswith("xkb:") and _is_gnome_session():
                 gnome_engine = get_current_engine_gnome_fallback()
                 if gnome_engine and gnome_engine != engine:
                     logger.debug(
-                        f"GNOME gsettings reports different engine: "
-                        f"{gnome_engine} (was {engine})"
+                        f"GNOME input-sources reports engine {gnome_engine}, "
+                        f"but ibus reports {engine}; trusting GNOME"
                     )
                     return gnome_engine
 
@@ -463,7 +542,7 @@ def _is_wayland_session() -> bool:
     return os.environ.get("XDG_SESSION_TYPE", "").lower() == "wayland"
 
 
-def get_current_xkb_layout() -> tuple:
+def get_current_xkb_layout() -> Tuple[str, str, str]:
     """
     Get the current XKB keyboard layout, variant, and options.
 
@@ -478,7 +557,8 @@ def get_current_xkb_layout() -> tuple:
 
     Returns:
         A tuple of (layout, variant, option). Returns ("", "", "") on Wayland
-        or on error, ("us", "", "") as X11 default.
+        and whenever the layout cannot be determined, so that callers skip
+        layout restoration instead of forcing a default (see issue #474).
     """
     if _is_wayland_session():
         logger.debug(
@@ -495,7 +575,7 @@ def get_current_xkb_layout() -> tuple:
             timeout=2,
         )
         if result.returncode == 0:
-            layout, variant, option = "us", "", ""
+            layout, variant, option = "", "", ""
             for line in result.stdout.split("\n"):
                 line = line.strip()
                 if line.startswith("layout:"):
@@ -508,7 +588,9 @@ def get_current_xkb_layout() -> tuple:
             return layout, variant, option
     except (subprocess.SubprocessError, FileNotFoundError) as e:
         logger.debug(f"Could not query XKB layout: {e}")
-    return "us", "", ""
+    # No usable answer: return empty so restore_xkb_layout() no-ops rather than
+    # flipping a non-US user to "us" (issue #474).
+    return "", "", ""
 
 
 def restore_xkb_layout(layout: str, variant: str = "", option: str = "") -> bool:

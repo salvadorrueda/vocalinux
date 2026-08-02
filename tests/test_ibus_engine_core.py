@@ -1031,6 +1031,66 @@ class TestIBusEngineStartupReadiness(unittest.TestCase):
             [ENGINE_NAME, "xkb:us::eng"],
         )
 
+    @patch("vocalinux.text_injection.ibus_engine.ensure_ibus_dir")
+    @patch("vocalinux.text_injection.ibus_engine.switch_engine")
+    @patch(
+        "vocalinux.text_injection.ibus_engine._list_ibus_xkb_engines",
+        return_value=["xkb:us::eng", "xkb:es:cat:cat", "xkb:gb:extd:eng"],
+    )
+    @patch("vocalinux.text_injection.ibus_engine._is_wayland_session", return_value=False)
+    @patch("vocalinux.text_injection.ibus_engine._is_gnome_session", return_value=True)
+    @patch("vocalinux.text_injection.ibus_engine.subprocess.run")
+    @patch("vocalinux.text_injection.ibus_engine.is_engine_active", return_value=False)
+    @patch("socket.socket")
+    @patch("vocalinux.text_injection.ibus_engine.SOCKET_PATH")
+    def test_inject_text_restores_gnome_layout_not_stale_ibus_default(
+        self,
+        mock_socket_path,
+        mock_socket_cls,
+        mock_is_active,
+        mock_run,
+        mock_gnome,
+        mock_wayland,
+        mock_list_engines,
+        mock_switch_engine,
+        mock_ensure_dir,
+    ):
+        """On GNOME X11, restore the layout GNOME has active, not ibus's stale default.
+
+        Regression test: ibus-daemon reported xkb:us::eng while the user's GNOME
+        input source was Catalan (es+cat), so every injection ended by switching
+        the keyboard to US English.
+        """
+        from vocalinux.text_injection.ibus_engine import ENGINE_NAME, IBusTextInjector
+
+        def fake_run(cmd, *args, **kwargs):
+            if cmd[:2] == ["ibus", "engine"]:
+                return MagicMock(returncode=0, stdout="xkb:us::eng\n", stderr="")
+            if cmd[-1] == "sources":
+                return MagicMock(
+                    returncode=0, stdout="[('xkb', 'es+cat'), ('xkb', 'gb+extd')]", stderr=""
+                )
+            if cmd[-1] == "current":
+                return MagicMock(returncode=0, stdout="uint32 0", stderr="")
+            raise AssertionError(f"unexpected command: {cmd}")
+
+        mock_run.side_effect = fake_run
+
+        mock_socket_path.exists.return_value = True
+        mock_sock = MagicMock()
+        mock_sock.__enter__.return_value = mock_sock
+        mock_sock.__exit__.return_value = None
+        mock_sock.recv.return_value = b"OK"
+        mock_socket_cls.return_value = mock_sock
+
+        injector = IBusTextInjector(auto_activate=False)
+        self.assertTrue(injector.inject_text("bon dia"))
+
+        self.assertEqual(
+            [call.args[0] for call in mock_switch_engine.call_args_list],
+            [ENGINE_NAME, "xkb:es:cat:cat"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

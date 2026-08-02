@@ -89,13 +89,14 @@ class TestXkbLayoutFunctions(unittest.TestCase):
 
     @patch("vocalinux.text_injection.ibus_engine.subprocess.run")
     def test_get_current_xkb_layout_error(self, mock_run):
+        """An unusable setxkbmap result must not be reported as "us" (#474)."""
         mock_run.return_value = MagicMock(returncode=1, stdout="")
 
         from vocalinux.text_injection.ibus_engine import get_current_xkb_layout
 
         result = get_current_xkb_layout()
 
-        self.assertEqual(result, ("us", "", ""))
+        self.assertEqual(result, ("", "", ""))
         mock_run.assert_called_once()
 
     @patch("vocalinux.text_injection.ibus_engine.subprocess.run")
@@ -106,7 +107,23 @@ class TestXkbLayoutFunctions(unittest.TestCase):
 
         result = get_current_xkb_layout()
 
-        self.assertEqual(result, ("us", "", ""))
+        self.assertEqual(result, ("", "", ""))
+
+    @patch("vocalinux.text_injection.ibus_engine.subprocess.run")
+    def test_get_current_xkb_layout_failure_does_not_restore(self, mock_run):
+        """A failed query must make restore_xkb_layout() a no-op, not force "us"."""
+        mock_run.return_value = MagicMock(returncode=1, stdout="")
+
+        from vocalinux.text_injection.ibus_engine import (
+            get_current_xkb_layout,
+            restore_xkb_layout,
+        )
+
+        layout, variant, option = get_current_xkb_layout()
+        mock_run.reset_mock()
+
+        self.assertFalse(restore_xkb_layout(layout, variant, option))
+        mock_run.assert_not_called()
 
     @patch("vocalinux.text_injection.ibus_engine.subprocess.run")
     def test_restore_xkb_layout_with_variant_and_option(self, mock_run):
